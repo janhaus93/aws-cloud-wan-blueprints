@@ -1,0 +1,686 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Frankfurt regional stack (eu-central-1) - 2 VPCs, security groups, EC2 instances
+  with ENIs/EIPs for SD-WAN Cloud WAN workshop. References IAM instance profile
+  created by the Virginia stack.
+
+Parameters:
+  SdwanInstanceType:
+    Type: String
+    Default: c5.large
+  ProjectName:
+    Type: String
+    Default: sdwan-cloudwan-workshop
+  Environment:
+    Type: String
+    Default: workshop
+  InstanceProfileName:
+    Type: String
+    Description: IAM instance profile name created by the Virginia stack
+  CloudWanConnectCidrFra:
+    Type: String
+    Default: 10.100.1.0/24
+  UbuntuAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id
+
+Resources:
+  # ===========================================================================
+  # fra-branch1-vpc (10.10.0.0/20)
+  # ===========================================================================
+  FraBranch1Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.10.0.0/20
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: fra-branch1-vpc
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  FraBranch1Igw:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: fra-branch1-vpc-igw
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  FraBranch1IgwAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref FraBranch1Vpc
+      InternetGatewayId: !Ref FraBranch1Igw
+
+  FraBranch1PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref FraBranch1Vpc
+      CidrBlock: 10.10.0.0/24
+      AvailabilityZone: eu-central-1a
+      Tags:
+        - Key: Name
+          Value: fra-branch1-vpc-public-1a
+        - Key: Type
+          Value: public
+
+  FraBranch1PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref FraBranch1Vpc
+      CidrBlock: 10.10.2.0/24
+      AvailabilityZone: eu-central-1a
+      Tags:
+        - Key: Name
+          Value: fra-branch1-vpc-public-2-1a
+        - Key: Type
+          Value: public
+
+  FraBranch1PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref FraBranch1Vpc
+      CidrBlock: 10.10.1.0/24
+      AvailabilityZone: eu-central-1a
+      Tags:
+        - Key: Name
+          Value: fra-branch1-vpc-private-1a
+        - Key: Type
+          Value: private
+
+  FraBranch1NatEip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: fra-branch1-vpc-nat-eip
+
+  FraBranch1NatGw:
+    Type: AWS::EC2::NatGateway
+    DependsOn: FraBranch1IgwAttachment
+    Properties:
+      AllocationId: !GetAtt FraBranch1NatEip.AllocationId
+      SubnetId: !Ref FraBranch1PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: fra-branch1-vpc-nat-gw
+
+  FraBranch1PublicRt:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref FraBranch1Vpc
+      Tags:
+        - Key: Name
+          Value: fra-branch1-vpc-public-rt
+
+  FraBranch1PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: FraBranch1IgwAttachment
+    Properties:
+      RouteTableId: !Ref FraBranch1PublicRt
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref FraBranch1Igw
+
+  FraBranch1PublicSubnet1RtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref FraBranch1PublicSubnet1
+      RouteTableId: !Ref FraBranch1PublicRt
+
+  FraBranch1PublicSubnet2RtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref FraBranch1PublicSubnet2
+      RouteTableId: !Ref FraBranch1PublicRt
+
+  FraBranch1PrivateRt:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref FraBranch1Vpc
+      Tags:
+        - Key: Name
+          Value: fra-branch1-vpc-private-rt
+
+  FraBranch1PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref FraBranch1PrivateRt
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref FraBranch1NatGw
+
+  FraBranch1PrivateSubnetRtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref FraBranch1PrivateSubnet
+      RouteTableId: !Ref FraBranch1PrivateRt
+
+  # ===========================================================================
+  # fra-sdwan-vpc (10.200.0.0/16)
+  # ===========================================================================
+  FraSdwanVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.200.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: fra-sdwan-vpc
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  FraSdwanIgw:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: fra-sdwan-vpc-igw
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  FraSdwanIgwAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref FraSdwanVpc
+      InternetGatewayId: !Ref FraSdwanIgw
+
+  FraSdwanPublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref FraSdwanVpc
+      CidrBlock: 10.200.0.0/24
+      AvailabilityZone: eu-central-1a
+      Tags:
+        - Key: Name
+          Value: fra-sdwan-vpc-public-1a
+        - Key: Type
+          Value: public
+
+  FraSdwanPublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref FraSdwanVpc
+      CidrBlock: 10.200.2.0/24
+      AvailabilityZone: eu-central-1a
+      Tags:
+        - Key: Name
+          Value: fra-sdwan-vpc-public-2-1a
+        - Key: Type
+          Value: public
+
+  FraSdwanPrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref FraSdwanVpc
+      CidrBlock: 10.200.1.0/24
+      AvailabilityZone: eu-central-1a
+      Tags:
+        - Key: Name
+          Value: fra-sdwan-vpc-private-1a
+        - Key: Type
+          Value: private
+
+  FraSdwanNatEip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: fra-sdwan-vpc-nat-eip
+
+  FraSdwanNatGw:
+    Type: AWS::EC2::NatGateway
+    DependsOn: FraSdwanIgwAttachment
+    Properties:
+      AllocationId: !GetAtt FraSdwanNatEip.AllocationId
+      SubnetId: !Ref FraSdwanPublicSubnet1
+      Tags:
+        - Key: Name
+          Value: fra-sdwan-vpc-nat-gw
+
+  FraSdwanPublicRt:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref FraSdwanVpc
+      Tags:
+        - Key: Name
+          Value: fra-sdwan-vpc-public-rt
+
+  FraSdwanPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: FraSdwanIgwAttachment
+    Properties:
+      RouteTableId: !Ref FraSdwanPublicRt
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref FraSdwanIgw
+
+  FraSdwanPublicSubnet1RtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref FraSdwanPublicSubnet1
+      RouteTableId: !Ref FraSdwanPublicRt
+
+  FraSdwanPublicSubnet2RtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref FraSdwanPublicSubnet2
+      RouteTableId: !Ref FraSdwanPublicRt
+
+  FraSdwanPrivateRt:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref FraSdwanVpc
+      Tags:
+        - Key: Name
+          Value: fra-sdwan-vpc-private-rt
+
+  FraSdwanPrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref FraSdwanPrivateRt
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref FraSdwanNatGw
+
+  FraSdwanPrivateSubnetRtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref FraSdwanPrivateSubnet
+      RouteTableId: !Ref FraSdwanPrivateRt
+
+  # ===========================================================================
+  # Security Groups - fra-branch1-vpc
+  # No ESP on fra-branch1 public SG (unlike Virginia branch1)
+  # ===========================================================================
+  FraBranch1PublicSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Public security group for SD-WAN instance - IKE, NAT-T, SSM
+      VpcId: !Ref FraBranch1Vpc
+      SecurityGroupIngress:
+        - IpProtocol: udp
+          FromPort: 500
+          ToPort: 500
+          CidrIp: 0.0.0.0/0
+          Description: IKE
+        - IpProtocol: udp
+          FromPort: 4500
+          ToPort: 4500
+          CidrIp: 0.0.0.0/0
+          Description: NAT-T
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.10.0.0/20
+          Description: SSM HTTPS from VPC CIDR
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+          Description: All outbound
+      Tags:
+        - Key: Name
+          Value: fra-branch1-vpc-sdwan-public-sg
+
+  FraBranch1PrivateSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Private security group for SD-WAN instance - internal traffic
+      VpcId: !Ref FraBranch1Vpc
+      SecurityGroupIngress:
+        - IpProtocol: '-1'
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 10.10.0.0/20
+          Description: All from VPC CIDR
+        - IpProtocol: '-1'
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 10.0.0.0/8
+          Description: All from RFC1918
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+          Description: All outbound
+      Tags:
+        - Key: Name
+          Value: fra-branch1-vpc-sdwan-private-sg
+
+  # ===========================================================================
+  # Security Groups - fra-sdwan-vpc
+  # ===========================================================================
+  FraSdwanPublicSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Public security group for SD-WAN instance - IKE, NAT-T, SSM
+      VpcId: !Ref FraSdwanVpc
+      SecurityGroupIngress:
+        - IpProtocol: udp
+          FromPort: 500
+          ToPort: 500
+          CidrIp: 0.0.0.0/0
+          Description: IKE
+        - IpProtocol: udp
+          FromPort: 4500
+          ToPort: 4500
+          CidrIp: 0.0.0.0/0
+          Description: NAT-T
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.200.0.0/16
+          Description: SSM HTTPS from VPC CIDR
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+          Description: All outbound
+      Tags:
+        - Key: Name
+          Value: fra-sdwan-vpc-sdwan-public-sg
+
+  FraSdwanPrivateSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Private security group for SD-WAN instance - internal traffic, BGP
+      VpcId: !Ref FraSdwanVpc
+      SecurityGroupIngress:
+        - IpProtocol: '-1'
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 10.200.0.0/16
+          Description: All from VPC CIDR
+        - IpProtocol: '-1'
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 10.0.0.0/8
+          Description: All from RFC1918
+        - IpProtocol: tcp
+          FromPort: 179
+          ToPort: 179
+          CidrIp: !Ref CloudWanConnectCidrFra
+          Description: BGP from Cloud WAN Connect Peer
+        - IpProtocol: '-1'
+          FromPort: -1
+          ToPort: -1
+          CidrIp: !Ref CloudWanConnectCidrFra
+          Description: All from Cloud WAN Connect CIDR
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+          Description: All outbound
+      Tags:
+        - Key: Name
+          Value: fra-sdwan-vpc-sdwan-private-sg
+
+  # ===========================================================================
+  # EC2 Instance, ENIs, and EIPs - fra-branch1
+  # ===========================================================================
+  FraBranch1MgmtEni:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Ref FraBranch1PublicSubnet1
+      GroupSet:
+        - !Ref FraBranch1PublicSg
+      SourceDestCheck: false
+      Tags:
+        - Key: Name
+          Value: fra-branch1-vpc-sdwan-mgmt
+
+  FraBranch1Instance:
+    Type: AWS::EC2::Instance
+    DependsOn: FraBranch1IgwAttachment
+    Properties:
+      ImageId: !Ref UbuntuAmiId
+      InstanceType: !Ref SdwanInstanceType
+      NetworkInterfaces:
+        - NetworkInterfaceId: !Ref FraBranch1MgmtEni
+          DeviceIndex: 0
+      IamInstanceProfile: !Ref InstanceProfileName
+      Tags:
+        - Key: Name
+          Value: fra-branch1-vpc-sdwan-instance
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  FraBranch1OutsideEni:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Ref FraBranch1PublicSubnet2
+      GroupSet:
+        - !Ref FraBranch1PublicSg
+      SourceDestCheck: false
+      Tags:
+        - Key: Name
+          Value: fra-branch1-vpc-sdwan-outside
+
+  FraBranch1InternalEni:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Ref FraBranch1PrivateSubnet
+      GroupSet:
+        - !Ref FraBranch1PrivateSg
+      SourceDestCheck: false
+      Tags:
+        - Key: Name
+          Value: fra-branch1-vpc-sdwan-internal
+
+  FraBranch1OutsideAttach:
+    Type: AWS::EC2::NetworkInterfaceAttachment
+    Properties:
+      InstanceId: !Ref FraBranch1Instance
+      NetworkInterfaceId: !Ref FraBranch1OutsideEni
+      DeviceIndex: 1
+
+  FraBranch1InternalAttach:
+    Type: AWS::EC2::NetworkInterfaceAttachment
+    Properties:
+      InstanceId: !Ref FraBranch1Instance
+      NetworkInterfaceId: !Ref FraBranch1InternalEni
+      DeviceIndex: 2
+
+  FraBranch1MgmtEip:
+    Type: AWS::EC2::EIP
+    DependsOn: FraBranch1IgwAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: fra-branch1-vpc-sdwan-mgmt-eip
+
+  FraBranch1MgmtEipAssoc:
+    Type: AWS::EC2::EIPAssociation
+    DependsOn: FraBranch1Instance
+    Properties:
+      AllocationId: !GetAtt FraBranch1MgmtEip.AllocationId
+      NetworkInterfaceId: !Ref FraBranch1MgmtEni
+
+  FraBranch1OutsideEip:
+    Type: AWS::EC2::EIP
+    DependsOn: FraBranch1IgwAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: fra-branch1-vpc-sdwan-outside-eip
+
+  FraBranch1OutsideEipAssoc:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt FraBranch1OutsideEip.AllocationId
+      NetworkInterfaceId: !Ref FraBranch1OutsideEni
+
+  # ===========================================================================
+  # EC2 Instance, ENIs, and EIPs - fra-sdwan
+  # ===========================================================================
+  FraSdwanMgmtEni:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Ref FraSdwanPublicSubnet1
+      GroupSet:
+        - !Ref FraSdwanPublicSg
+      SourceDestCheck: false
+      Tags:
+        - Key: Name
+          Value: fra-sdwan-vpc-sdwan-mgmt
+
+  FraSdwanInstance:
+    Type: AWS::EC2::Instance
+    DependsOn: FraSdwanIgwAttachment
+    Properties:
+      ImageId: !Ref UbuntuAmiId
+      InstanceType: !Ref SdwanInstanceType
+      NetworkInterfaces:
+        - NetworkInterfaceId: !Ref FraSdwanMgmtEni
+          DeviceIndex: 0
+      IamInstanceProfile: !Ref InstanceProfileName
+      Tags:
+        - Key: Name
+          Value: fra-sdwan-vpc-sdwan-instance
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  FraSdwanOutsideEni:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Ref FraSdwanPublicSubnet2
+      GroupSet:
+        - !Ref FraSdwanPublicSg
+      SourceDestCheck: false
+      Tags:
+        - Key: Name
+          Value: fra-sdwan-vpc-sdwan-outside
+
+  FraSdwanInternalEni:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Ref FraSdwanPrivateSubnet
+      GroupSet:
+        - !Ref FraSdwanPrivateSg
+      SourceDestCheck: false
+      Tags:
+        - Key: Name
+          Value: fra-sdwan-vpc-sdwan-internal
+
+  FraSdwanOutsideAttach:
+    Type: AWS::EC2::NetworkInterfaceAttachment
+    Properties:
+      InstanceId: !Ref FraSdwanInstance
+      NetworkInterfaceId: !Ref FraSdwanOutsideEni
+      DeviceIndex: 1
+
+  FraSdwanInternalAttach:
+    Type: AWS::EC2::NetworkInterfaceAttachment
+    Properties:
+      InstanceId: !Ref FraSdwanInstance
+      NetworkInterfaceId: !Ref FraSdwanInternalEni
+      DeviceIndex: 2
+
+  FraSdwanMgmtEip:
+    Type: AWS::EC2::EIP
+    DependsOn: FraSdwanIgwAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: fra-sdwan-vpc-sdwan-mgmt-eip
+
+  FraSdwanMgmtEipAssoc:
+    Type: AWS::EC2::EIPAssociation
+    DependsOn: FraSdwanInstance
+    Properties:
+      AllocationId: !GetAtt FraSdwanMgmtEip.AllocationId
+      NetworkInterfaceId: !Ref FraSdwanMgmtEni
+
+  FraSdwanOutsideEip:
+    Type: AWS::EC2::EIP
+    DependsOn: FraSdwanIgwAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: fra-sdwan-vpc-sdwan-outside-eip
+
+  FraSdwanOutsideEipAssoc:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt FraSdwanOutsideEip.AllocationId
+      NetworkInterfaceId: !Ref FraSdwanOutsideEni
+
+Outputs:
+  # VPC IDs
+  FraBranch1VpcId:
+    Value: !Ref FraBranch1Vpc
+  FraSdwanVpcId:
+    Value: !Ref FraSdwanVpc
+
+  # fra-sdwan VPC ARN, subnet, route table for CloudWAN stack
+  FraSdwanVpcArn:
+    Value: !Sub 'arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:vpc/${FraSdwanVpc}'
+  FraSdwanPrivateSubnetId:
+    Value: !Ref FraSdwanPrivateSubnet
+  FraSdwanPrivateSubnetArn:
+    Value: !Sub 'arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:subnet/${FraSdwanPrivateSubnet}'
+  FraSdwanPrivateRouteTableId:
+    Value: !Ref FraSdwanPrivateRt
+
+  # Internal ENI private IP for CloudWAN Connect Peer
+  FraSdwanInternalEniPrivateIp:
+    Value: !GetAtt FraSdwanInternalEni.PrimaryPrivateIpAddress
+
+  # Instance IDs
+  FraBranch1InstanceId:
+    Value: !Ref FraBranch1Instance
+  FraSdwanInstanceId:
+    Value: !Ref FraSdwanInstance
+
+  # EIPs - fra-branch1
+  FraBranch1MgmtEip:
+    Value: !Ref FraBranch1MgmtEip
+  FraBranch1OutsideEip:
+    Value: !Ref FraBranch1OutsideEip
+
+  # EIPs - fra-sdwan
+  FraSdwanMgmtEip:
+    Value: !Ref FraSdwanMgmtEip
+  FraSdwanOutsideEip:
+    Value: !Ref FraSdwanOutsideEip
+
+  # Outside ENI private IPs for SSM parameters
+  FraSdwanOutsidePrivateIp:
+    Value: !GetAtt FraSdwanOutsideEni.PrimaryPrivateIpAddress
+  FraBranch1OutsidePrivateIp:
+    Value: !GetAtt FraBranch1OutsideEni.PrimaryPrivateIpAddress

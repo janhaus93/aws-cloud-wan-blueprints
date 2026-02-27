@@ -1,0 +1,325 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Parent stack for SD-WAN Cloud WAN workshop. Orchestrates deployment of
+  Virginia (nested), Frankfurt (cross-region via custom resource),
+  Cloud WAN (nested), and Orchestration (nested) stacks.
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t3.micro
+  SdwanInstanceType:
+    Type: String
+    Default: c5.large
+  ProjectName:
+    Type: String
+    Default: sdwan-cloudwan-workshop
+  Environment:
+    Type: String
+    Default: workshop
+  VyosS3Bucket:
+    Type: String
+    Default: fra-vyos-bucket
+  VyosS3Region:
+    Type: String
+    Default: us-east-1
+  VyosS3Key:
+    Type: String
+    Default: vyos_dxgl-1.3.3-bc64a3a-5_lxd_amd64.tar.gz
+  SdwanBgpAsn:
+    Type: Number
+    Default: 65001
+  VpnTunnelCidr:
+    Type: String
+    Default: 169.254.100.0/30
+  CloudWanConnectCidrNv:
+    Type: String
+    Default: 10.100.0.0/24
+  CloudWanConnectCidrFra:
+    Type: String
+    Default: 10.100.1.0/24
+  CloudWanSegmentName:
+    Type: String
+    Default: sdwan
+  LambdaS3Bucket:
+    Type: String
+    Description: S3 bucket containing the Lambda deployment zip
+  LambdaS3Key:
+    Type: String
+    Description: S3 key for the Lambda deployment zip
+  Phase1WaitSeconds:
+    Type: Number
+    Default: 60
+  Phase2WaitSeconds:
+    Type: Number
+    Default: 90
+  Phase3WaitSeconds:
+    Type: Number
+    Default: 30
+  TemplateBaseUrl:
+    Type: String
+    Description: S3 URL prefix where nested stack templates are stored
+
+Resources:
+
+  # ===========================================================================
+  # Virginia Regional Stack (us-east-1) - nested stack
+  # ===========================================================================
+  VirginiaStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub '${TemplateBaseUrl}/virginia-stack.yaml'
+      Parameters:
+        SdwanInstanceType: !Ref SdwanInstanceType
+        ProjectName: !Ref ProjectName
+        Environment: !Ref Environment
+        VyosS3Bucket: !Ref VyosS3Bucket
+        VyosS3Region: !Ref VyosS3Region
+        VyosS3Key: !Ref VyosS3Key
+        CloudWanConnectCidrNv: !Ref CloudWanConnectCidrNv
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  # ===========================================================================
+  # Cross-Region Deployer Lambda + IAM Role
+  # ===========================================================================
+  CrossRegionDeployerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-cross-region-deployer-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CrossRegionCloudFormation
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudformation:CreateStack
+                  - cloudformation:UpdateStack
+                  - cloudformation:DeleteStack
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                Resource: !Sub 'arn:aws:cloudformation:eu-central-1:${AWS::AccountId}:stack/${ProjectName}-frankfurt/*'
+              - Effect: Allow
+                Action:
+                  - ec2:*
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    aws:RequestedRegion: eu-central-1
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                  - iam:GetRole
+                  - iam:GetInstanceProfile
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub 'arn:aws:s3:::${LambdaS3Bucket}/*'
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource: '*'
+
+  CrossRegionDeployerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-cross-region-deployer'
+      Runtime: python3.12
+      Handler: cross_region_stack.handler
+      Role: !GetAtt CrossRegionDeployerRole.Arn
+      Timeout: 900
+      MemorySize: 256
+      Code:
+        S3Bucket: !Ref LambdaS3Bucket
+        S3Key: !Ref LambdaS3Key
+
+  # ===========================================================================
+  # Frankfurt Regional Stack (eu-central-1) - via custom resource
+  # ===========================================================================
+  FrankfurtStack:
+    Type: Custom::CrossRegionStack
+    DependsOn: VirginiaStack
+    Properties:
+      ServiceToken: !GetAtt CrossRegionDeployerFunction.Arn
+      Region: eu-central-1
+      StackName: !Sub '${ProjectName}-frankfurt'
+      TemplateURL: !Sub '${TemplateBaseUrl}/frankfurt-stack.yaml'
+      Parameters:
+        SdwanInstanceType: !Ref SdwanInstanceType
+        ProjectName: !Ref ProjectName
+        Environment: !Ref Environment
+        InstanceProfileName: !GetAtt VirginiaStack.Outputs.InstanceProfileName
+        CloudWanConnectCidrFra: !Ref CloudWanConnectCidrFra
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  # ===========================================================================
+  # Cloud WAN Stack (us-east-1) - depends on both regional stacks
+  # ===========================================================================
+  CloudWanStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - VirginiaStack
+      - FrankfurtStack
+    Properties:
+      TemplateURL: !Sub '${TemplateBaseUrl}/cloudwan-stack.yaml'
+      Parameters:
+        ProjectName: !Ref ProjectName
+        Environment: !Ref Environment
+        CloudWanSegmentName: !Ref CloudWanSegmentName
+        CloudWanConnectCidrNv: !Ref CloudWanConnectCidrNv
+        CloudWanConnectCidrFra: !Ref CloudWanConnectCidrFra
+        SdwanBgpAsn: !Ref SdwanBgpAsn
+        NvSdwanVpcArn: !GetAtt VirginiaStack.Outputs.NvSdwanVpcArn
+        NvSdwanPrivateSubnetArn: !GetAtt VirginiaStack.Outputs.NvSdwanPrivateSubnetArn
+        NvSdwanPrivateRouteTableId: !GetAtt VirginiaStack.Outputs.NvSdwanPrivateRouteTableId
+        NvSdwanInternalEniPrivateIp: !GetAtt VirginiaStack.Outputs.NvSdwanInternalEniPrivateIp
+        FraSdwanVpcArn: !GetAtt FrankfurtStack.FraSdwanVpcArn
+        FraSdwanPrivateSubnetArn: !GetAtt FrankfurtStack.FraSdwanPrivateSubnetArn
+        FraSdwanPrivateRouteTableId: !GetAtt FrankfurtStack.FraSdwanPrivateRouteTableId
+        FraSdwanInternalEniPrivateIp: !GetAtt FrankfurtStack.FraSdwanInternalEniPrivateIp
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  # ===========================================================================
+  # Orchestration Stack (us-east-1) - depends on CloudWAN stack
+  # ===========================================================================
+  OrchestrationStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - CloudWanStack
+    Properties:
+      TemplateURL: !Sub '${TemplateBaseUrl}/orchestration-stack.yaml'
+      Parameters:
+        ProjectName: !Ref ProjectName
+        Environment: !Ref Environment
+        LambdaS3Bucket: !Ref LambdaS3Bucket
+        LambdaS3Key: !Ref LambdaS3Key
+        Phase1WaitSeconds: !Ref Phase1WaitSeconds
+        Phase2WaitSeconds: !Ref Phase2WaitSeconds
+        Phase3WaitSeconds: !Ref Phase3WaitSeconds
+        TemplateBaseUrl: !Ref TemplateBaseUrl
+        # Virginia instance data
+        NvSdwanInstanceId: !GetAtt VirginiaStack.Outputs.NvSdwanInstanceId
+        NvBranch1InstanceId: !GetAtt VirginiaStack.Outputs.NvBranch1InstanceId
+        NvSdwanOutsideEip: !GetAtt VirginiaStack.Outputs.NvSdwanOutsideEip
+        NvSdwanOutsidePrivateIp: !GetAtt VirginiaStack.Outputs.NvSdwanOutsidePrivateIp
+        NvBranch1OutsideEip: !GetAtt VirginiaStack.Outputs.NvBranch1OutsideEip
+        NvBranch1OutsidePrivateIp: !GetAtt VirginiaStack.Outputs.NvBranch1OutsidePrivateIp
+        # Frankfurt instance data (from custom resource)
+        FraSdwanInstanceId: !GetAtt FrankfurtStack.FraSdwanInstanceId
+        FraBranch1InstanceId: !GetAtt FrankfurtStack.FraBranch1InstanceId
+        FraSdwanOutsideEip: !GetAtt FrankfurtStack.FraSdwanOutsideEip
+        FraSdwanOutsidePrivateIp: !GetAtt FrankfurtStack.FraSdwanOutsidePrivateIp
+        FraBranch1OutsideEip: !GetAtt FrankfurtStack.FraBranch1OutsideEip
+        FraBranch1OutsidePrivateIp: !GetAtt FrankfurtStack.FraBranch1OutsidePrivateIp
+        # Cloud WAN BGP config - nv-sdwan
+        NvSdwanConnectPeerBgpIp1: !GetAtt CloudWanStack.Outputs.NvSdwanConnectPeerBgpIp1
+        NvSdwanConnectPeerBgpIp2: !GetAtt CloudWanStack.Outputs.NvSdwanConnectPeerBgpIp2
+        NvSdwanConnectPeerAsn: !GetAtt CloudWanStack.Outputs.NvSdwanConnectPeerAsn
+        # Cloud WAN BGP config - fra-sdwan
+        FraSdwanConnectPeerBgpIp1: !GetAtt CloudWanStack.Outputs.FraSdwanConnectPeerBgpIp1
+        FraSdwanConnectPeerBgpIp2: !GetAtt CloudWanStack.Outputs.FraSdwanConnectPeerBgpIp2
+        FraSdwanConnectPeerAsn: !GetAtt CloudWanStack.Outputs.FraSdwanConnectPeerAsn
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+Outputs:
+  # Instance IDs
+  NvBranch1InstanceId:
+    Description: nv-branch1 EC2 instance ID
+    Value: !GetAtt VirginiaStack.Outputs.NvBranch1InstanceId
+  NvBranch2InstanceId:
+    Description: nv-branch2 EC2 instance ID
+    Value: !GetAtt VirginiaStack.Outputs.NvBranch2InstanceId
+  NvSdwanInstanceId:
+    Description: nv-sdwan EC2 instance ID
+    Value: !GetAtt VirginiaStack.Outputs.NvSdwanInstanceId
+  FraBranch1InstanceId:
+    Description: fra-branch1 EC2 instance ID
+    Value: !GetAtt FrankfurtStack.FraBranch1InstanceId
+  FraSdwanInstanceId:
+    Description: fra-sdwan EC2 instance ID
+    Value: !GetAtt FrankfurtStack.FraSdwanInstanceId
+
+  # Management EIPs
+  NvBranch1MgmtEip:
+    Description: nv-branch1 management EIP
+    Value: !GetAtt VirginiaStack.Outputs.NvBranch1MgmtEip
+  NvBranch2MgmtEip:
+    Description: nv-branch2 management EIP
+    Value: !GetAtt VirginiaStack.Outputs.NvBranch2MgmtEip
+  NvSdwanMgmtEip:
+    Description: nv-sdwan management EIP
+    Value: !GetAtt VirginiaStack.Outputs.NvSdwanMgmtEip
+  FraBranch1MgmtEip:
+    Description: fra-branch1 management EIP
+    Value: !GetAtt FrankfurtStack.FraBranch1MgmtEip
+  FraSdwanMgmtEip:
+    Description: fra-sdwan management EIP
+    Value: !GetAtt FrankfurtStack.FraSdwanMgmtEip
+
+  # Outside EIPs
+  NvBranch1OutsideEip:
+    Description: nv-branch1 outside EIP
+    Value: !GetAtt VirginiaStack.Outputs.NvBranch1OutsideEip
+  NvBranch2OutsideEip:
+    Description: nv-branch2 outside EIP
+    Value: !GetAtt VirginiaStack.Outputs.NvBranch2OutsideEip
+  NvSdwanOutsideEip:
+    Description: nv-sdwan outside EIP
+    Value: !GetAtt VirginiaStack.Outputs.NvSdwanOutsideEip
+  FraBranch1OutsideEip:
+    Description: fra-branch1 outside EIP
+    Value: !GetAtt FrankfurtStack.FraBranch1OutsideEip
+  FraSdwanOutsideEip:
+    Description: fra-sdwan outside EIP
+    Value: !GetAtt FrankfurtStack.FraSdwanOutsideEip
+
+  # Cloud WAN
+  CoreNetworkId:
+    Description: Cloud WAN Core Network ID
+    Value: !GetAtt CloudWanStack.Outputs.CoreNetworkId
+  CoreNetworkArn:
+    Description: Cloud WAN Core Network ARN
+    Value: !GetAtt CloudWanStack.Outputs.CoreNetworkArn
+
+  # Orchestration
+  StateMachineArn:
+    Description: Step Functions state machine ARN
+    Value: !GetAtt OrchestrationStack.Outputs.StateMachineArn
+  StartExecutionCommand:
+    Description: CLI command to start the SD-WAN orchestration
+    Value: !GetAtt OrchestrationStack.Outputs.StartExecutionCommand

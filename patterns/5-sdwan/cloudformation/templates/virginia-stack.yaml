@@ -1,0 +1,1057 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Virginia regional stack (us-east-1) - 3 VPCs, security groups, EC2 instances
+  with ENIs/EIPs, IAM role and instance profile for SD-WAN Cloud WAN workshop.
+
+Parameters:
+  SdwanInstanceType:
+    Type: String
+    Default: c5.large
+  ProjectName:
+    Type: String
+    Default: sdwan-cloudwan-workshop
+  Environment:
+    Type: String
+    Default: workshop
+  VyosS3Bucket:
+    Type: String
+    Default: fra-vyos-bucket
+  VyosS3Region:
+    Type: String
+    Default: us-east-1
+  VyosS3Key:
+    Type: String
+    Default: vyos_dxgl-1.3.3-bc64a3a-5_lxd_amd64.tar.gz
+  CloudWanConnectCidrNv:
+    Type: String
+    Default: 10.100.0.0/24
+  UbuntuAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id
+
+Resources:
+  # ===========================================================================
+  # nv-branch1-vpc (10.20.0.0/20)
+  # ===========================================================================
+  NvBranch1Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.20.0.0/20
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: nv-branch1-vpc
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  NvBranch1Igw:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: nv-branch1-vpc-igw
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  NvBranch1IgwAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref NvBranch1Vpc
+      InternetGatewayId: !Ref NvBranch1Igw
+
+  NvBranch1PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref NvBranch1Vpc
+      CidrBlock: 10.20.0.0/24
+      AvailabilityZone: us-east-1a
+      Tags:
+        - Key: Name
+          Value: nv-branch1-vpc-public-1a
+        - Key: Type
+          Value: public
+
+  NvBranch1PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref NvBranch1Vpc
+      CidrBlock: 10.20.2.0/24
+      AvailabilityZone: us-east-1a
+      Tags:
+        - Key: Name
+          Value: nv-branch1-vpc-public-2-1a
+        - Key: Type
+          Value: public
+
+  NvBranch1PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref NvBranch1Vpc
+      CidrBlock: 10.20.1.0/24
+      AvailabilityZone: us-east-1a
+      Tags:
+        - Key: Name
+          Value: nv-branch1-vpc-private-1a
+        - Key: Type
+          Value: private
+
+  NvBranch1NatEip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: nv-branch1-vpc-nat-eip
+
+  NvBranch1NatGw:
+    Type: AWS::EC2::NatGateway
+    DependsOn: NvBranch1IgwAttachment
+    Properties:
+      AllocationId: !GetAtt NvBranch1NatEip.AllocationId
+      SubnetId: !Ref NvBranch1PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: nv-branch1-vpc-nat-gw
+
+  NvBranch1PublicRt:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref NvBranch1Vpc
+      Tags:
+        - Key: Name
+          Value: nv-branch1-vpc-public-rt
+
+  NvBranch1PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: NvBranch1IgwAttachment
+    Properties:
+      RouteTableId: !Ref NvBranch1PublicRt
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref NvBranch1Igw
+
+  NvBranch1PublicSubnet1RtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref NvBranch1PublicSubnet1
+      RouteTableId: !Ref NvBranch1PublicRt
+
+  NvBranch1PublicSubnet2RtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref NvBranch1PublicSubnet2
+      RouteTableId: !Ref NvBranch1PublicRt
+
+  NvBranch1PrivateRt:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref NvBranch1Vpc
+      Tags:
+        - Key: Name
+          Value: nv-branch1-vpc-private-rt
+
+  NvBranch1PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref NvBranch1PrivateRt
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NvBranch1NatGw
+
+  NvBranch1PrivateSubnetRtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref NvBranch1PrivateSubnet
+      RouteTableId: !Ref NvBranch1PrivateRt
+
+  # ===========================================================================
+  # nv-branch2-vpc (10.30.0.0/20)
+  # ===========================================================================
+  NvBranch2Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.30.0.0/20
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: nv-branch2-vpc
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  NvBranch2Igw:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: nv-branch2-vpc-igw
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  NvBranch2IgwAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref NvBranch2Vpc
+      InternetGatewayId: !Ref NvBranch2Igw
+
+  NvBranch2PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref NvBranch2Vpc
+      CidrBlock: 10.30.0.0/24
+      AvailabilityZone: us-east-1a
+      Tags:
+        - Key: Name
+          Value: nv-branch2-vpc-public-1a
+        - Key: Type
+          Value: public
+
+  NvBranch2PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref NvBranch2Vpc
+      CidrBlock: 10.30.2.0/24
+      AvailabilityZone: us-east-1a
+      Tags:
+        - Key: Name
+          Value: nv-branch2-vpc-public-2-1a
+        - Key: Type
+          Value: public
+
+  NvBranch2PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref NvBranch2Vpc
+      CidrBlock: 10.30.1.0/24
+      AvailabilityZone: us-east-1a
+      Tags:
+        - Key: Name
+          Value: nv-branch2-vpc-private-1a
+        - Key: Type
+          Value: private
+
+  NvBranch2NatEip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: nv-branch2-vpc-nat-eip
+
+  NvBranch2NatGw:
+    Type: AWS::EC2::NatGateway
+    DependsOn: NvBranch2IgwAttachment
+    Properties:
+      AllocationId: !GetAtt NvBranch2NatEip.AllocationId
+      SubnetId: !Ref NvBranch2PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: nv-branch2-vpc-nat-gw
+
+  NvBranch2PublicRt:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref NvBranch2Vpc
+      Tags:
+        - Key: Name
+          Value: nv-branch2-vpc-public-rt
+
+  NvBranch2PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: NvBranch2IgwAttachment
+    Properties:
+      RouteTableId: !Ref NvBranch2PublicRt
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref NvBranch2Igw
+
+  NvBranch2PublicSubnet1RtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref NvBranch2PublicSubnet1
+      RouteTableId: !Ref NvBranch2PublicRt
+
+  NvBranch2PublicSubnet2RtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref NvBranch2PublicSubnet2
+      RouteTableId: !Ref NvBranch2PublicRt
+
+  NvBranch2PrivateRt:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref NvBranch2Vpc
+      Tags:
+        - Key: Name
+          Value: nv-branch2-vpc-private-rt
+
+  NvBranch2PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref NvBranch2PrivateRt
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NvBranch2NatGw
+
+  NvBranch2PrivateSubnetRtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref NvBranch2PrivateSubnet
+      RouteTableId: !Ref NvBranch2PrivateRt
+
+  # ===========================================================================
+  # nv-sdwan-vpc (10.201.0.0/16)
+  # ===========================================================================
+  NvSdwanVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.201.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: nv-sdwan-vpc
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  NvSdwanIgw:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: nv-sdwan-vpc-igw
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  NvSdwanIgwAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref NvSdwanVpc
+      InternetGatewayId: !Ref NvSdwanIgw
+
+  NvSdwanPublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref NvSdwanVpc
+      CidrBlock: 10.201.0.0/24
+      AvailabilityZone: us-east-1a
+      Tags:
+        - Key: Name
+          Value: nv-sdwan-vpc-public-1a
+        - Key: Type
+          Value: public
+
+  NvSdwanPublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref NvSdwanVpc
+      CidrBlock: 10.201.2.0/24
+      AvailabilityZone: us-east-1a
+      Tags:
+        - Key: Name
+          Value: nv-sdwan-vpc-public-2-1a
+        - Key: Type
+          Value: public
+
+  NvSdwanPrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref NvSdwanVpc
+      CidrBlock: 10.201.1.0/24
+      AvailabilityZone: us-east-1a
+      Tags:
+        - Key: Name
+          Value: nv-sdwan-vpc-private-1a
+        - Key: Type
+          Value: private
+
+  NvSdwanNatEip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: nv-sdwan-vpc-nat-eip
+
+  NvSdwanNatGw:
+    Type: AWS::EC2::NatGateway
+    DependsOn: NvSdwanIgwAttachment
+    Properties:
+      AllocationId: !GetAtt NvSdwanNatEip.AllocationId
+      SubnetId: !Ref NvSdwanPublicSubnet1
+      Tags:
+        - Key: Name
+          Value: nv-sdwan-vpc-nat-gw
+
+  NvSdwanPublicRt:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref NvSdwanVpc
+      Tags:
+        - Key: Name
+          Value: nv-sdwan-vpc-public-rt
+
+  NvSdwanPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: NvSdwanIgwAttachment
+    Properties:
+      RouteTableId: !Ref NvSdwanPublicRt
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref NvSdwanIgw
+
+  NvSdwanPublicSubnet1RtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref NvSdwanPublicSubnet1
+      RouteTableId: !Ref NvSdwanPublicRt
+
+  NvSdwanPublicSubnet2RtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref NvSdwanPublicSubnet2
+      RouteTableId: !Ref NvSdwanPublicRt
+
+  NvSdwanPrivateRt:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref NvSdwanVpc
+      Tags:
+        - Key: Name
+          Value: nv-sdwan-vpc-private-rt
+
+  NvSdwanPrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref NvSdwanPrivateRt
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NvSdwanNatGw
+
+  NvSdwanPrivateSubnetRtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref NvSdwanPrivateSubnet
+      RouteTableId: !Ref NvSdwanPrivateRt
+
+  # ===========================================================================
+  # Security Groups - nv-branch1-vpc
+  # ===========================================================================
+  NvBranch1PublicSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Public security group for SD-WAN instance - IKE, NAT-T, ESP, SSM
+      VpcId: !Ref NvBranch1Vpc
+      SecurityGroupIngress:
+        - IpProtocol: udp
+          FromPort: 500
+          ToPort: 500
+          CidrIp: 0.0.0.0/0
+          Description: IKE
+        - IpProtocol: udp
+          FromPort: 4500
+          ToPort: 4500
+          CidrIp: 0.0.0.0/0
+          Description: NAT-T
+        - IpProtocol: '50'
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+          Description: ESP
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.20.0.0/20
+          Description: SSM HTTPS from VPC CIDR
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+          Description: All outbound
+      Tags:
+        - Key: Name
+          Value: nv-branch1-vpc-sdwan-public-sg
+
+  NvBranch1PrivateSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Private security group for SD-WAN instance - internal traffic
+      VpcId: !Ref NvBranch1Vpc
+      SecurityGroupIngress:
+        - IpProtocol: '-1'
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 10.20.0.0/20
+          Description: All from VPC CIDR
+        - IpProtocol: '-1'
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 10.0.0.0/8
+          Description: All from RFC1918
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+          Description: All outbound
+      Tags:
+        - Key: Name
+          Value: nv-branch1-vpc-sdwan-private-sg
+
+  # ===========================================================================
+  # Security Groups - nv-branch2-vpc
+  # ===========================================================================
+  NvBranch2PublicSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Public security group for SD-WAN instance - IKE, NAT-T, SSM
+      VpcId: !Ref NvBranch2Vpc
+      SecurityGroupIngress:
+        - IpProtocol: udp
+          FromPort: 500
+          ToPort: 500
+          CidrIp: 0.0.0.0/0
+          Description: IKE
+        - IpProtocol: udp
+          FromPort: 4500
+          ToPort: 4500
+          CidrIp: 0.0.0.0/0
+          Description: NAT-T
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.30.0.0/20
+          Description: SSM HTTPS from VPC CIDR
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+          Description: All outbound
+      Tags:
+        - Key: Name
+          Value: nv-branch2-vpc-sdwan-public-sg
+
+  NvBranch2PrivateSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Private security group for SD-WAN instance - internal traffic
+      VpcId: !Ref NvBranch2Vpc
+      SecurityGroupIngress:
+        - IpProtocol: '-1'
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 10.30.0.0/20
+          Description: All from VPC CIDR
+        - IpProtocol: '-1'
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 10.0.0.0/8
+          Description: All from RFC1918
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+          Description: All outbound
+      Tags:
+        - Key: Name
+          Value: nv-branch2-vpc-sdwan-private-sg
+
+  # ===========================================================================
+  # Security Groups - nv-sdwan-vpc
+  # ===========================================================================
+  NvSdwanPublicSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Public security group for SD-WAN instance - IKE, NAT-T, ESP, SSM
+      VpcId: !Ref NvSdwanVpc
+      SecurityGroupIngress:
+        - IpProtocol: udp
+          FromPort: 500
+          ToPort: 500
+          CidrIp: 0.0.0.0/0
+          Description: IKE
+        - IpProtocol: udp
+          FromPort: 4500
+          ToPort: 4500
+          CidrIp: 0.0.0.0/0
+          Description: NAT-T
+        - IpProtocol: '50'
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+          Description: ESP
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.201.0.0/16
+          Description: SSM HTTPS from VPC CIDR
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+          Description: All outbound
+      Tags:
+        - Key: Name
+          Value: nv-sdwan-vpc-sdwan-public-sg
+
+  NvSdwanPrivateSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Private security group for SD-WAN instance - internal traffic, BGP
+      VpcId: !Ref NvSdwanVpc
+      SecurityGroupIngress:
+        - IpProtocol: '-1'
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 10.201.0.0/16
+          Description: All from VPC CIDR
+        - IpProtocol: '-1'
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 10.0.0.0/8
+          Description: All from RFC1918
+        - IpProtocol: tcp
+          FromPort: 179
+          ToPort: 179
+          CidrIp: !Ref CloudWanConnectCidrNv
+          Description: BGP from Cloud WAN Connect Peer
+        - IpProtocol: '-1'
+          FromPort: -1
+          ToPort: -1
+          CidrIp: !Ref CloudWanConnectCidrNv
+          Description: All from Cloud WAN Connect CIDR
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+          Description: All outbound
+      Tags:
+        - Key: Name
+          Value: nv-sdwan-vpc-sdwan-private-sg
+
+  # ===========================================================================
+  # IAM Role and Instance Profile
+  # ===========================================================================
+  SdwanInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: sdwan-instance-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: sdwan-s3-access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: s3:ListAllMyBuckets
+                Resource: '*'
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub 'arn:aws:s3:::${VyosS3Bucket}'
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub 'arn:aws:s3:::${VyosS3Bucket}/*'
+      Tags:
+        - Key: Name
+          Value: sdwan-instance-role
+
+  SdwanInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: sdwan-instance-profile
+      Roles:
+        - !Ref SdwanInstanceRole
+
+  # ===========================================================================
+  # EC2 Instance, ENIs, and EIPs - nv-branch1
+  # ===========================================================================
+  NvBranch1MgmtEni:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Ref NvBranch1PublicSubnet1
+      GroupSet:
+        - !Ref NvBranch1PublicSg
+      SourceDestCheck: false
+      Tags:
+        - Key: Name
+          Value: nv-branch1-vpc-sdwan-mgmt
+
+  NvBranch1Instance:
+    Type: AWS::EC2::Instance
+    DependsOn: NvBranch1IgwAttachment
+    Properties:
+      ImageId: !Ref UbuntuAmiId
+      InstanceType: !Ref SdwanInstanceType
+      NetworkInterfaces:
+        - NetworkInterfaceId: !Ref NvBranch1MgmtEni
+          DeviceIndex: 0
+      IamInstanceProfile: !Ref SdwanInstanceProfile
+      Tags:
+        - Key: Name
+          Value: nv-branch1-vpc-sdwan-instance
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  NvBranch1OutsideEni:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Ref NvBranch1PublicSubnet2
+      GroupSet:
+        - !Ref NvBranch1PublicSg
+      SourceDestCheck: false
+      Tags:
+        - Key: Name
+          Value: nv-branch1-vpc-sdwan-outside
+
+  NvBranch1InternalEni:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Ref NvBranch1PrivateSubnet
+      GroupSet:
+        - !Ref NvBranch1PrivateSg
+      SourceDestCheck: false
+      Tags:
+        - Key: Name
+          Value: nv-branch1-vpc-sdwan-internal
+
+  NvBranch1OutsideAttach:
+    Type: AWS::EC2::NetworkInterfaceAttachment
+    Properties:
+      InstanceId: !Ref NvBranch1Instance
+      NetworkInterfaceId: !Ref NvBranch1OutsideEni
+      DeviceIndex: 1
+
+  NvBranch1InternalAttach:
+    Type: AWS::EC2::NetworkInterfaceAttachment
+    Properties:
+      InstanceId: !Ref NvBranch1Instance
+      NetworkInterfaceId: !Ref NvBranch1InternalEni
+      DeviceIndex: 2
+
+  NvBranch1MgmtEip:
+    Type: AWS::EC2::EIP
+    DependsOn: NvBranch1IgwAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: nv-branch1-vpc-sdwan-mgmt-eip
+
+  NvBranch1MgmtEipAssoc:
+    Type: AWS::EC2::EIPAssociation
+    DependsOn: NvBranch1Instance
+    Properties:
+      AllocationId: !GetAtt NvBranch1MgmtEip.AllocationId
+      NetworkInterfaceId: !Ref NvBranch1MgmtEni
+
+  NvBranch1OutsideEip:
+    Type: AWS::EC2::EIP
+    DependsOn: NvBranch1IgwAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: nv-branch1-vpc-sdwan-outside-eip
+
+  NvBranch1OutsideEipAssoc:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt NvBranch1OutsideEip.AllocationId
+      NetworkInterfaceId: !Ref NvBranch1OutsideEni
+
+  # ===========================================================================
+  # EC2 Instance, ENIs, and EIPs - nv-branch2
+  # ===========================================================================
+  NvBranch2MgmtEni:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Ref NvBranch2PublicSubnet1
+      GroupSet:
+        - !Ref NvBranch2PublicSg
+      SourceDestCheck: false
+      Tags:
+        - Key: Name
+          Value: nv-branch2-vpc-sdwan-mgmt
+
+  NvBranch2Instance:
+    Type: AWS::EC2::Instance
+    DependsOn: NvBranch2IgwAttachment
+    Properties:
+      ImageId: !Ref UbuntuAmiId
+      InstanceType: !Ref SdwanInstanceType
+      NetworkInterfaces:
+        - NetworkInterfaceId: !Ref NvBranch2MgmtEni
+          DeviceIndex: 0
+      IamInstanceProfile: !Ref SdwanInstanceProfile
+      Tags:
+        - Key: Name
+          Value: nv-branch2-vpc-sdwan-instance
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  NvBranch2OutsideEni:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Ref NvBranch2PublicSubnet2
+      GroupSet:
+        - !Ref NvBranch2PublicSg
+      SourceDestCheck: false
+      Tags:
+        - Key: Name
+          Value: nv-branch2-vpc-sdwan-outside
+
+  NvBranch2InternalEni:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Ref NvBranch2PrivateSubnet
+      GroupSet:
+        - !Ref NvBranch2PrivateSg
+      SourceDestCheck: false
+      Tags:
+        - Key: Name
+          Value: nv-branch2-vpc-sdwan-internal
+
+  NvBranch2OutsideAttach:
+    Type: AWS::EC2::NetworkInterfaceAttachment
+    Properties:
+      InstanceId: !Ref NvBranch2Instance
+      NetworkInterfaceId: !Ref NvBranch2OutsideEni
+      DeviceIndex: 1
+
+  NvBranch2InternalAttach:
+    Type: AWS::EC2::NetworkInterfaceAttachment
+    Properties:
+      InstanceId: !Ref NvBranch2Instance
+      NetworkInterfaceId: !Ref NvBranch2InternalEni
+      DeviceIndex: 2
+
+  NvBranch2MgmtEip:
+    Type: AWS::EC2::EIP
+    DependsOn: NvBranch2IgwAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: nv-branch2-vpc-sdwan-mgmt-eip
+
+  NvBranch2MgmtEipAssoc:
+    Type: AWS::EC2::EIPAssociation
+    DependsOn: NvBranch2Instance
+    Properties:
+      AllocationId: !GetAtt NvBranch2MgmtEip.AllocationId
+      NetworkInterfaceId: !Ref NvBranch2MgmtEni
+
+  NvBranch2OutsideEip:
+    Type: AWS::EC2::EIP
+    DependsOn: NvBranch2IgwAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: nv-branch2-vpc-sdwan-outside-eip
+
+  NvBranch2OutsideEipAssoc:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt NvBranch2OutsideEip.AllocationId
+      NetworkInterfaceId: !Ref NvBranch2OutsideEni
+
+  # ===========================================================================
+  # EC2 Instance, ENIs, and EIPs - nv-sdwan
+  # ===========================================================================
+  NvSdwanMgmtEni:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Ref NvSdwanPublicSubnet1
+      GroupSet:
+        - !Ref NvSdwanPublicSg
+      SourceDestCheck: false
+      Tags:
+        - Key: Name
+          Value: nv-sdwan-vpc-sdwan-mgmt
+
+  NvSdwanInstance:
+    Type: AWS::EC2::Instance
+    DependsOn: NvSdwanIgwAttachment
+    Properties:
+      ImageId: !Ref UbuntuAmiId
+      InstanceType: !Ref SdwanInstanceType
+      NetworkInterfaces:
+        - NetworkInterfaceId: !Ref NvSdwanMgmtEni
+          DeviceIndex: 0
+      IamInstanceProfile: !Ref SdwanInstanceProfile
+      Tags:
+        - Key: Name
+          Value: nv-sdwan-vpc-sdwan-instance
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  NvSdwanOutsideEni:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Ref NvSdwanPublicSubnet2
+      GroupSet:
+        - !Ref NvSdwanPublicSg
+      SourceDestCheck: false
+      Tags:
+        - Key: Name
+          Value: nv-sdwan-vpc-sdwan-outside
+
+  NvSdwanInternalEni:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Ref NvSdwanPrivateSubnet
+      GroupSet:
+        - !Ref NvSdwanPrivateSg
+      SourceDestCheck: false
+      Tags:
+        - Key: Name
+          Value: nv-sdwan-vpc-sdwan-internal
+
+  NvSdwanOutsideAttach:
+    Type: AWS::EC2::NetworkInterfaceAttachment
+    Properties:
+      InstanceId: !Ref NvSdwanInstance
+      NetworkInterfaceId: !Ref NvSdwanOutsideEni
+      DeviceIndex: 1
+
+  NvSdwanInternalAttach:
+    Type: AWS::EC2::NetworkInterfaceAttachment
+    Properties:
+      InstanceId: !Ref NvSdwanInstance
+      NetworkInterfaceId: !Ref NvSdwanInternalEni
+      DeviceIndex: 2
+
+  NvSdwanMgmtEip:
+    Type: AWS::EC2::EIP
+    DependsOn: NvSdwanIgwAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: nv-sdwan-vpc-sdwan-mgmt-eip
+
+  NvSdwanMgmtEipAssoc:
+    Type: AWS::EC2::EIPAssociation
+    DependsOn: NvSdwanInstance
+    Properties:
+      AllocationId: !GetAtt NvSdwanMgmtEip.AllocationId
+      NetworkInterfaceId: !Ref NvSdwanMgmtEni
+
+  NvSdwanOutsideEip:
+    Type: AWS::EC2::EIP
+    DependsOn: NvSdwanIgwAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: nv-sdwan-vpc-sdwan-outside-eip
+
+  NvSdwanOutsideEipAssoc:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt NvSdwanOutsideEip.AllocationId
+      NetworkInterfaceId: !Ref NvSdwanOutsideEni
+
+Outputs:
+  # VPC IDs
+  NvBranch1VpcId:
+    Value: !Ref NvBranch1Vpc
+  NvBranch2VpcId:
+    Value: !Ref NvBranch2Vpc
+  NvSdwanVpcId:
+    Value: !Ref NvSdwanVpc
+
+  # nv-sdwan VPC ARN, subnet, route table for CloudWAN stack
+  NvSdwanVpcArn:
+    Value: !Sub 'arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:vpc/${NvSdwanVpc}'
+  NvSdwanPrivateSubnetId:
+    Value: !Ref NvSdwanPrivateSubnet
+  NvSdwanPrivateSubnetArn:
+    Value: !Sub 'arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:subnet/${NvSdwanPrivateSubnet}'
+  NvSdwanPrivateRouteTableId:
+    Value: !Ref NvSdwanPrivateRt
+
+  # Internal ENI private IPs for CloudWAN Connect Peers
+  NvSdwanInternalEniPrivateIp:
+    Value: !GetAtt NvSdwanInternalEni.PrimaryPrivateIpAddress
+
+  # Instance IDs
+  NvBranch1InstanceId:
+    Value: !Ref NvBranch1Instance
+  NvBranch2InstanceId:
+    Value: !Ref NvBranch2Instance
+  NvSdwanInstanceId:
+    Value: !Ref NvSdwanInstance
+
+  # EIPs - nv-branch1
+  NvBranch1MgmtEip:
+    Value: !Ref NvBranch1MgmtEip
+  NvBranch1OutsideEip:
+    Value: !Ref NvBranch1OutsideEip
+
+  # EIPs - nv-branch2
+  NvBranch2MgmtEip:
+    Value: !Ref NvBranch2MgmtEip
+  NvBranch2OutsideEip:
+    Value: !Ref NvBranch2OutsideEip
+
+  # EIPs - nv-sdwan
+  NvSdwanMgmtEip:
+    Value: !Ref NvSdwanMgmtEip
+  NvSdwanOutsideEip:
+    Value: !Ref NvSdwanOutsideEip
+
+  # Outside ENI private IPs for SSM parameters
+  NvSdwanOutsidePrivateIp:
+    Value: !GetAtt NvSdwanOutsideEni.PrimaryPrivateIpAddress
+  NvBranch1OutsidePrivateIp:
+    Value: !GetAtt NvBranch1OutsideEni.PrimaryPrivateIpAddress
+
+  # IAM Instance Profile name (shared with Frankfurt stack)
+  InstanceProfileName:
+    Value: !Ref SdwanInstanceProfile

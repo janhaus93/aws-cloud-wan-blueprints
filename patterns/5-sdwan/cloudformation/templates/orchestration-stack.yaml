@@ -1,0 +1,649 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Orchestration stack (us-east-1) - Lambda functions, Lambda IAM role, Virginia
+  SSM parameters, Frankfurt SSM nested stack, Step Functions state machine,
+  and CloudWatch log group for SD-WAN Cloud WAN workshop.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: sdwan-cloudwan-workshop
+  Environment:
+    Type: String
+    Default: workshop
+  LambdaS3Bucket:
+    Type: String
+    Description: S3 bucket containing the Lambda deployment zip
+  LambdaS3Key:
+    Type: String
+    Description: S3 key for the Lambda deployment zip
+  Phase1WaitSeconds:
+    Type: Number
+    Default: 60
+  Phase2WaitSeconds:
+    Type: Number
+    Default: 90
+  Phase3WaitSeconds:
+    Type: Number
+    Default: 30
+  TemplateBaseUrl:
+    Type: String
+    Description: S3 URL prefix where nested stack templates are stored
+  # Virginia instance data
+  NvSdwanInstanceId:
+    Type: String
+  NvBranch1InstanceId:
+    Type: String
+  NvSdwanOutsideEip:
+    Type: String
+  NvSdwanOutsidePrivateIp:
+    Type: String
+  NvBranch1OutsideEip:
+    Type: String
+  NvBranch1OutsidePrivateIp:
+    Type: String
+  # Frankfurt instance data
+  FraSdwanInstanceId:
+    Type: String
+  FraBranch1InstanceId:
+    Type: String
+  FraSdwanOutsideEip:
+    Type: String
+  FraSdwanOutsidePrivateIp:
+    Type: String
+  FraBranch1OutsideEip:
+    Type: String
+  FraBranch1OutsidePrivateIp:
+    Type: String
+  # Cloud WAN BGP config - nv-sdwan
+  NvSdwanConnectPeerBgpIp1:
+    Type: String
+  NvSdwanConnectPeerBgpIp2:
+    Type: String
+  NvSdwanConnectPeerAsn:
+    Type: String
+  # Cloud WAN BGP config - fra-sdwan
+  FraSdwanConnectPeerBgpIp1:
+    Type: String
+  FraSdwanConnectPeerBgpIp2:
+    Type: String
+  FraSdwanConnectPeerAsn:
+    Type: String
+
+Resources:
+  # ===========================================================================
+  # Lambda Execution IAM Role
+  # ===========================================================================
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-lambda-execution-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: sdwan-lambda-policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: SSMSendCommand
+                Effect: Allow
+                Action:
+                  - ssm:SendCommand
+                Resource:
+                  - !Sub 'arn:aws:ssm:*::document/AWS-RunShellScript'
+                  - !Sub 'arn:aws:ec2:*:${AWS::AccountId}:instance/${NvSdwanInstanceId}'
+                  - !Sub 'arn:aws:ec2:*:${AWS::AccountId}:instance/${NvBranch1InstanceId}'
+                  - !Sub 'arn:aws:ec2:*:${AWS::AccountId}:instance/${FraSdwanInstanceId}'
+                  - !Sub 'arn:aws:ec2:*:${AWS::AccountId}:instance/${FraBranch1InstanceId}'
+              - Sid: SSMGetCommand
+                Effect: Allow
+                Action:
+                  - ssm:GetCommandInvocation
+                  - ssm:DescribeInstanceInformation
+                Resource: '*'
+              - Sid: SSMGetParameter
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                Resource:
+                  - !Sub 'arn:aws:ssm:*:${AWS::AccountId}:parameter/sdwan/*'
+              - Sid: SSMGetParametersByPath
+                Effect: Allow
+                Action:
+                  - ssm:GetParametersByPath
+                Resource:
+                  - !Sub 'arn:aws:ssm:*:${AWS::AccountId}:parameter/sdwan'
+                  - !Sub 'arn:aws:ssm:*:${AWS::AccountId}:parameter/sdwan/*'
+              - Sid: CloudWatchLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub 'arn:aws:logs:*:${AWS::AccountId}:*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-lambda-execution-role'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  # ===========================================================================
+  # Lambda Functions (phase1 - phase4)
+  # ===========================================================================
+  Phase1Lambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-sdwan-phase1'
+      Runtime: python3.12
+      Handler: phase1_handler.handler
+      Timeout: 900
+      MemorySize: 256
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref LambdaS3Bucket
+        S3Key: !Ref LambdaS3Key
+      Environment:
+        Variables:
+          SSM_PARAM_PREFIX: /sdwan/
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-sdwan-phase1'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  Phase2Lambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-sdwan-phase2'
+      Runtime: python3.12
+      Handler: phase2_handler.handler
+      Timeout: 600
+      MemorySize: 256
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref LambdaS3Bucket
+        S3Key: !Ref LambdaS3Key
+      Environment:
+        Variables:
+          SSM_PARAM_PREFIX: /sdwan/
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-sdwan-phase2'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  Phase3Lambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-sdwan-phase3'
+      Runtime: python3.12
+      Handler: phase3_handler.handler
+      Timeout: 600
+      MemorySize: 256
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref LambdaS3Bucket
+        S3Key: !Ref LambdaS3Key
+      Environment:
+        Variables:
+          SSM_PARAM_PREFIX: /sdwan/
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-sdwan-phase3'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  Phase4Lambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-sdwan-phase4'
+      Runtime: python3.12
+      Handler: phase4_handler.handler
+      Timeout: 600
+      MemorySize: 256
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref LambdaS3Bucket
+        S3Key: !Ref LambdaS3Key
+      Environment:
+        Variables:
+          SSM_PARAM_PREFIX: /sdwan/
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-sdwan-phase4'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  # ===========================================================================
+  # Virginia SSM Parameters - /sdwan/nv-sdwan/ (6 params)
+  # ===========================================================================
+  NvSdwanInstanceIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /sdwan/nv-sdwan/instance-id
+      Type: String
+      Value: !Ref NvSdwanInstanceId
+      Description: Virginia SD-WAN instance ID
+      Tags:
+        Project: !Ref ProjectName
+        Environment: !Ref Environment
+        ManagedBy: cloudformation
+
+  NvSdwanOutsideEipParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /sdwan/nv-sdwan/outside-eip
+      Type: String
+      Value: !Ref NvSdwanOutsideEip
+      Description: Virginia SD-WAN outside EIP
+      Tags:
+        Project: !Ref ProjectName
+        Environment: !Ref Environment
+        ManagedBy: cloudformation
+
+  NvSdwanOutsidePrivateIpParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /sdwan/nv-sdwan/outside-private-ip
+      Type: String
+      Value: !Ref NvSdwanOutsidePrivateIp
+      Description: Virginia SD-WAN outside ENI private IP
+      Tags:
+        Project: !Ref ProjectName
+        Environment: !Ref Environment
+        ManagedBy: cloudformation
+
+  NvSdwanCloudwanPeerIp1Param:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /sdwan/nv-sdwan/cloudwan-peer-ip1
+      Type: String
+      Value: !Ref NvSdwanConnectPeerBgpIp1
+      Description: Cloud WAN BGP peer IP 1 for nv-sdwan
+      Tags:
+        Project: !Ref ProjectName
+        Environment: !Ref Environment
+        ManagedBy: cloudformation
+
+  NvSdwanCloudwanPeerIp2Param:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /sdwan/nv-sdwan/cloudwan-peer-ip2
+      Type: String
+      Value: !Ref NvSdwanConnectPeerBgpIp2
+      Description: Cloud WAN BGP peer IP 2 for nv-sdwan
+      Tags:
+        Project: !Ref ProjectName
+        Environment: !Ref Environment
+        ManagedBy: cloudformation
+
+  NvSdwanCloudwanAsnParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /sdwan/nv-sdwan/cloudwan-asn
+      Type: String
+      Value: !Ref NvSdwanConnectPeerAsn
+      Description: Cloud WAN core network ASN for nv-sdwan
+      Tags:
+        Project: !Ref ProjectName
+        Environment: !Ref Environment
+        ManagedBy: cloudformation
+
+  # ===========================================================================
+  # Virginia SSM Parameters - /sdwan/nv-branch1/ (3 params)
+  # ===========================================================================
+  NvBranch1InstanceIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /sdwan/nv-branch1/instance-id
+      Type: String
+      Value: !Ref NvBranch1InstanceId
+      Description: Virginia branch1 instance ID
+      Tags:
+        Project: !Ref ProjectName
+        Environment: !Ref Environment
+        ManagedBy: cloudformation
+
+  NvBranch1OutsideEipParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /sdwan/nv-branch1/outside-eip
+      Type: String
+      Value: !Ref NvBranch1OutsideEip
+      Description: Virginia branch1 outside EIP
+      Tags:
+        Project: !Ref ProjectName
+        Environment: !Ref Environment
+        ManagedBy: cloudformation
+
+  NvBranch1OutsidePrivateIpParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /sdwan/nv-branch1/outside-private-ip
+      Type: String
+      Value: !Ref NvBranch1OutsidePrivateIp
+      Description: Virginia branch1 outside ENI private IP
+      Tags:
+        Project: !Ref ProjectName
+        Environment: !Ref Environment
+        ManagedBy: cloudformation
+
+  # ===========================================================================
+  # Frankfurt SSM Parameters (eu-central-1 via custom resource)
+  # ===========================================================================
+  FrankfurtSsmRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-fra-ssm-creator-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SSMCrossRegion
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:PutParameter
+                  - ssm:DeleteParameter
+                Resource: !Sub 'arn:aws:ssm:eu-central-1:${AWS::AccountId}:parameter/sdwan/*'
+
+  FrankfurtSsmFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-fra-ssm-creator'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt FrankfurtSsmRole.Arn
+      Timeout: 60
+      MemorySize: 128
+      Code:
+        ZipFile: |
+          import json, boto3, urllib.request
+          def send(event, context, status, reason=""):
+            body = json.dumps({"Status": status, "Reason": reason or "OK",
+              "PhysicalResourceId": "fra-ssm-params",
+              "StackId": event["StackId"], "RequestId": event["RequestId"],
+              "LogicalResourceId": event["LogicalResourceId"], "Data": {}}).encode()
+            req = urllib.request.Request(event["ResponseURL"], data=body, method="PUT")
+            req.add_header("Content-Type", "")
+            urllib.request.urlopen(req)
+          def handler(event, context):
+            try:
+              p = event["ResourceProperties"]
+              ssm = boto3.client("ssm", region_name="eu-central-1")
+              params = p.get("Parameters", {})
+              if event["RequestType"] in ("Create", "Update"):
+                for name, value in params.items():
+                  ssm.put_parameter(Name=name, Value=value, Type="String", Overwrite=True)
+              elif event["RequestType"] == "Delete":
+                for name in params:
+                  try: ssm.delete_parameter(Name=name)
+                  except Exception: pass
+              send(event, context, "SUCCESS")
+            except Exception as e:
+              print(e)
+              send(event, context, "FAILED", str(e)[:256])
+
+  FrankfurtSsmParams:
+    Type: Custom::FrankfurtSsmParams
+    Properties:
+      ServiceToken: !GetAtt FrankfurtSsmFunction.Arn
+      ProjectName: !Ref ProjectName
+      Environment: !Ref Environment
+      Parameters:
+        /sdwan/fra-sdwan/instance-id: !Ref FraSdwanInstanceId
+        /sdwan/fra-sdwan/outside-eip: !Ref FraSdwanOutsideEip
+        /sdwan/fra-sdwan/outside-private-ip: !Ref FraSdwanOutsidePrivateIp
+        /sdwan/fra-sdwan/cloudwan-peer-ip1: !Ref FraSdwanConnectPeerBgpIp1
+        /sdwan/fra-sdwan/cloudwan-peer-ip2: !Ref FraSdwanConnectPeerBgpIp2
+        /sdwan/fra-sdwan/cloudwan-asn: !Ref FraSdwanConnectPeerAsn
+        /sdwan/fra-branch1/instance-id: !Ref FraBranch1InstanceId
+        /sdwan/fra-branch1/outside-eip: !Ref FraBranch1OutsideEip
+        /sdwan/fra-branch1/outside-private-ip: !Ref FraBranch1OutsidePrivateIp
+
+  # ===========================================================================
+  # Step Functions IAM Role
+  # ===========================================================================
+  StepFunctionsExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-sfn-execution-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: sdwan-sfn-policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: InvokeLambda
+                Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt Phase1Lambda.Arn
+                  - !GetAtt Phase2Lambda.Arn
+                  - !GetAtt Phase3Lambda.Arn
+                  - !GetAtt Phase4Lambda.Arn
+              - Sid: CloudWatchLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogDelivery
+                  - logs:GetLogDelivery
+                  - logs:UpdateLogDelivery
+                  - logs:DeleteLogDelivery
+                  - logs:ListLogDeliveries
+                  - logs:PutResourcePolicy
+                  - logs:DescribeResourcePolicies
+                  - logs:DescribeLogGroups
+                Resource: '*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-sfn-execution-role'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  # ===========================================================================
+  # CloudWatch Log Group for Step Functions
+  # ===========================================================================
+  OrchestrationLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/vendedlogs/states/sdwan-orchestration
+      RetentionInDays: 30
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  # ===========================================================================
+  # Step Functions State Machine
+  # ===========================================================================
+  OrchestrationStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    DependsOn: OrchestrationLogGroup
+    Properties:
+      StateMachineName: !Sub '${ProjectName}-sdwan-orchestration'
+      RoleArn: !GetAtt StepFunctionsExecutionRole.Arn
+      LoggingConfiguration:
+        Level: ERROR
+        IncludeExecutionData: false
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt OrchestrationLogGroup.Arn
+      DefinitionString: !Sub |
+        {
+          "Comment": "SD-WAN Configuration Orchestration",
+          "StartAt": "Phase1_BaseSetup",
+          "States": {
+            "Phase1_BaseSetup": {
+              "Type": "Task",
+              "Resource": "${Phase1Lambda.Arn}",
+              "Retry": [
+                {
+                  "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+                  "IntervalSeconds": 30,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "Next": "FailureState",
+                  "ResultPath": "$.error"
+                }
+              ],
+              "ResultPath": "$.phase1_result",
+              "Next": "Wait_After_Phase1"
+            },
+            "Wait_After_Phase1": {
+              "Type": "Wait",
+              "Seconds": ${Phase1WaitSeconds},
+              "Next": "Phase2_VpnBgpConfig"
+            },
+            "Phase2_VpnBgpConfig": {
+              "Type": "Task",
+              "Resource": "${Phase2Lambda.Arn}",
+              "Retry": [
+                {
+                  "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+                  "IntervalSeconds": 30,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "Next": "FailureState",
+                  "ResultPath": "$.error"
+                }
+              ],
+              "ResultPath": "$.phase2_result",
+              "Next": "Wait_After_Phase2"
+            },
+            "Wait_After_Phase2": {
+              "Type": "Wait",
+              "Seconds": ${Phase2WaitSeconds},
+              "Next": "Phase3_Verify"
+            },
+            "Phase3_Verify": {
+              "Type": "Task",
+              "Resource": "${Phase3Lambda.Arn}",
+              "Retry": [
+                {
+                  "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+                  "IntervalSeconds": 30,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "Next": "FailureState",
+                  "ResultPath": "$.error"
+                }
+              ],
+              "ResultPath": "$.phase3_result",
+              "Next": "Wait_After_Phase3"
+            },
+            "Wait_After_Phase3": {
+              "Type": "Wait",
+              "Seconds": ${Phase3WaitSeconds},
+              "Next": "Phase4_CloudWanBgp"
+            },
+            "Phase4_CloudWanBgp": {
+              "Type": "Task",
+              "Resource": "${Phase4Lambda.Arn}",
+              "Retry": [
+                {
+                  "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+                  "IntervalSeconds": 30,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "Next": "FailureState",
+                  "ResultPath": "$.error"
+                }
+              ],
+              "ResultPath": "$.phase4_result",
+              "Next": "SuccessState"
+            },
+            "SuccessState": {
+              "Type": "Succeed"
+            },
+            "FailureState": {
+              "Type": "Fail",
+              "Cause": "Phase execution failed",
+              "Error": "PhaseExecutionError"
+            }
+          }
+        }
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-sdwan-orchestration'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+Outputs:
+  StateMachineArn:
+    Description: Step Functions state machine ARN
+    Value: !Ref OrchestrationStateMachine
+  StartExecutionCommand:
+    Description: CLI command to start the SD-WAN orchestration
+    Value: !Sub 'aws stepfunctions start-execution --state-machine-arn ${OrchestrationStateMachine}'

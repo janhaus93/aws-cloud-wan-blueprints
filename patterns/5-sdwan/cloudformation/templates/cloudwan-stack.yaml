@@ -1,0 +1,432 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Cloud WAN stack - Global network, core network with policy, VPC attachments,
+  Connect attachments (NO_ENCAP), Connect peers for BGP peering, and routes
+  for SD-WAN Cloud WAN workshop.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: sdwan-cloudwan-workshop
+  Environment:
+    Type: String
+    Default: workshop
+  CloudWanSegmentName:
+    Type: String
+    Default: sdwan
+  CloudWanConnectCidrNv:
+    Type: String
+    Default: 10.100.0.0/24
+  CloudWanConnectCidrFra:
+    Type: String
+    Default: 10.100.1.0/24
+  SdwanBgpAsn:
+    Type: Number
+    Default: 65001
+  NvSdwanVpcArn:
+    Type: String
+  NvSdwanPrivateSubnetArn:
+    Type: String
+  NvSdwanPrivateRouteTableId:
+    Type: String
+  NvSdwanInternalEniPrivateIp:
+    Type: String
+  FraSdwanVpcArn:
+    Type: String
+  FraSdwanPrivateSubnetArn:
+    Type: String
+  FraSdwanPrivateRouteTableId:
+    Type: String
+  FraSdwanInternalEniPrivateIp:
+    Type: String
+
+Resources:
+  # ===========================================================================
+  # Global Network
+  # ===========================================================================
+  GlobalNetwork:
+    Type: AWS::NetworkManager::GlobalNetwork
+    Properties:
+      Description: SD-WAN Cloud WAN Global Network
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-global-network'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  # ===========================================================================
+  # Core Network with inline policy
+  # ===========================================================================
+  CoreNetwork:
+    Type: AWS::NetworkManager::CoreNetwork
+    Properties:
+      GlobalNetworkId: !Ref GlobalNetwork
+      Description: SD-WAN Cloud WAN Core Network
+      PolicyDocument:
+        version: '2021.12'
+        core-network-configuration:
+          vpn-ecmp-support: true
+          asn-ranges:
+            - 64512-65534
+          inside-cidr-blocks:
+            - 10.100.0.0/24
+            - 10.100.1.0/24
+          edge-locations:
+            - location: us-east-1
+              inside-cidr-blocks:
+                - 10.100.0.0/24
+            - location: eu-central-1
+              inside-cidr-blocks:
+                - 10.100.1.0/24
+        segments:
+          - name: !Ref CloudWanSegmentName
+            require-attachment-acceptance: false
+        attachment-policies:
+          - rule-number: 100
+            action:
+              association-method: tag
+              tag-value-of-key: segment
+            conditions:
+              - type: tag-value
+                operator: equals
+                key: segment
+                value: !Ref CloudWanSegmentName
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-core-network'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  # ===========================================================================
+  # VPC Attachments
+  # ===========================================================================
+  NvSdwanVpcAttachment:
+    Type: AWS::NetworkManager::VpcAttachment
+    DependsOn: CoreNetwork
+    Properties:
+      CoreNetworkId: !GetAtt CoreNetwork.CoreNetworkId
+      VpcArn: !Ref NvSdwanVpcArn
+      SubnetArns:
+        - !Ref NvSdwanPrivateSubnetArn
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-nv-sdwan-vpc-attachment'
+        - Key: segment
+          Value: !Ref CloudWanSegmentName
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  FraSdwanVpcAttachment:
+    Type: AWS::NetworkManager::VpcAttachment
+    DependsOn: CoreNetwork
+    Properties:
+      CoreNetworkId: !GetAtt CoreNetwork.CoreNetworkId
+      VpcArn: !Ref FraSdwanVpcArn
+      SubnetArns:
+        - !Ref FraSdwanPrivateSubnetArn
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-fra-sdwan-vpc-attachment'
+        - Key: segment
+          Value: !Ref CloudWanSegmentName
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  # ===========================================================================
+  # Connect Attachments (NO_ENCAP / tunnel-less)
+  # ===========================================================================
+  NvSdwanConnectAttachment:
+    Type: AWS::NetworkManager::ConnectAttachment
+    Properties:
+      CoreNetworkId: !GetAtt CoreNetwork.CoreNetworkId
+      TransportAttachmentId: !GetAtt NvSdwanVpcAttachment.AttachmentId
+      EdgeLocation: us-east-1
+      Options:
+        Protocol: NO_ENCAP
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-nv-sdwan-connect'
+        - Key: segment
+          Value: !Ref CloudWanSegmentName
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  FraSdwanConnectAttachment:
+    Type: AWS::NetworkManager::ConnectAttachment
+    Properties:
+      CoreNetworkId: !GetAtt CoreNetwork.CoreNetworkId
+      TransportAttachmentId: !GetAtt FraSdwanVpcAttachment.AttachmentId
+      EdgeLocation: eu-central-1
+      Options:
+        Protocol: NO_ENCAP
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-fra-sdwan-connect'
+        - Key: segment
+          Value: !Ref CloudWanSegmentName
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  # ===========================================================================
+  # Connect Peers (BGP peering endpoints)
+  # ===========================================================================
+  NvSdwanConnectPeer:
+    Type: AWS::NetworkManager::ConnectPeer
+    Properties:
+      ConnectAttachmentId: !GetAtt NvSdwanConnectAttachment.AttachmentId
+      PeerAddress: !Ref NvSdwanInternalEniPrivateIp
+      SubnetArn: !Ref NvSdwanPrivateSubnetArn
+      BgpOptions:
+        PeerAsn: !Ref SdwanBgpAsn
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-nv-sdwan-connect-peer'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  FraSdwanConnectPeer:
+    Type: AWS::NetworkManager::ConnectPeer
+    Properties:
+      ConnectAttachmentId: !GetAtt FraSdwanConnectAttachment.AttachmentId
+      PeerAddress: !Ref FraSdwanInternalEniPrivateIp
+      SubnetArn: !Ref FraSdwanPrivateSubnetArn
+      BgpOptions:
+        PeerAsn: !Ref SdwanBgpAsn
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-fra-sdwan-connect-peer'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  # ===========================================================================
+  # Custom Resource Lambda to retrieve Connect Peer BGP configuration
+  # CloudFormation Fn::GetAtt does not expose BGP peer IPs or core ASN
+  # ===========================================================================
+  ConnectPeerBgpLookupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: NetworkManagerReadOnly
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - networkmanager:GetConnectPeer
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ec2:CreateRoute
+                  - ec2:DeleteRoute
+                Resource: '*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-connect-peer-bgp-lookup-role'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  ConnectPeerBgpLookupFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-connect-peer-bgp-lookup'
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 120
+      MemorySize: 128
+      Role: !GetAtt ConnectPeerBgpLookupRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import cfnresponse
+          import time
+
+          def handler(event, context):
+              if event['RequestType'] == 'Delete':
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  return
+
+              try:
+                  connect_peer_id = event['ResourceProperties']['ConnectPeerId']
+                  client = boto3.client('networkmanager', region_name='us-east-1')
+
+                  # Wait for connect peer to be available (may take a few minutes)
+                  for attempt in range(30):
+                      resp = client.get_connect_peer(ConnectPeerId=connect_peer_id)
+                      peer = resp['ConnectPeer']
+                      state = peer.get('State', '')
+                      if state == 'AVAILABLE':
+                          break
+                      if state in ('FAILED', 'DELETING'):
+                          raise Exception(f'Connect peer in {state} state')
+                      time.sleep(10)
+
+                  config = peer.get('Configuration', {})
+                  bgp_configs = config.get('BgpConfigurations', [])
+
+                  data = {
+                      'BgpPeerIp1': bgp_configs[0]['CoreNetworkAddress'] if len(bgp_configs) > 0 else '',
+                      'BgpPeerIp2': bgp_configs[1]['CoreNetworkAddress'] if len(bgp_configs) > 1 else '',
+                      'CoreNetworkAsn': str(bgp_configs[0].get('CoreNetworkAsn', '')) if len(bgp_configs) > 0 else '',
+                  }
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, data)
+              except Exception as e:
+                  print(f'Error: {e}')
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-connect-peer-bgp-lookup'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  NvSdwanBgpLookup:
+    Type: Custom::ConnectPeerBgpLookup
+    DependsOn: NvSdwanConnectPeer
+    Properties:
+      ServiceToken: !GetAtt ConnectPeerBgpLookupFunction.Arn
+      ConnectPeerId: !Ref NvSdwanConnectPeer
+
+  FraSdwanBgpLookup:
+    Type: Custom::ConnectPeerBgpLookup
+    DependsOn: FraSdwanConnectPeer
+    Properties:
+      ServiceToken: !GetAtt ConnectPeerBgpLookupFunction.Arn
+      ConnectPeerId: !Ref FraSdwanConnectPeer
+
+  # ===========================================================================
+  # Routes in private route tables for Cloud WAN connect CIDRs
+  # ===========================================================================
+  NvSdwanCloudWanRoute:
+    Type: AWS::EC2::Route
+    DependsOn: NvSdwanVpcAttachment
+    Properties:
+      RouteTableId: !Ref NvSdwanPrivateRouteTableId
+      DestinationCidrBlock: !Ref CloudWanConnectCidrNv
+      CoreNetworkArn: !GetAtt CoreNetwork.CoreNetworkArn
+
+  FraSdwanCloudWanRouteFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-fra-route-creator'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt ConnectPeerBgpLookupRole.Arn
+      Timeout: 60
+      MemorySize: 128
+      Code:
+        ZipFile: |
+          import json, boto3, urllib.request
+          def send(event, context, status, reason=""):
+            body = json.dumps({"Status": status, "Reason": reason or "OK",
+              "PhysicalResourceId": event.get("PhysicalResourceId", context.log_stream_name),
+              "StackId": event["StackId"], "RequestId": event["RequestId"],
+              "LogicalResourceId": event["LogicalResourceId"], "Data": {}}).encode()
+            req = urllib.request.Request(event["ResponseURL"], data=body, method="PUT")
+            req.add_header("Content-Type", "")
+            urllib.request.urlopen(req)
+          def handler(event, context):
+            try:
+              p = event["ResourceProperties"]
+              ec2 = boto3.client("ec2", region_name=p["Region"])
+              if event["RequestType"] == "Create":
+                ec2.create_route(RouteTableId=p["RouteTableId"],
+                  DestinationCidrBlock=p["DestinationCidrBlock"], CoreNetworkArn=p["CoreNetworkArn"])
+              elif event["RequestType"] == "Delete":
+                try:
+                  ec2.delete_route(RouteTableId=p["RouteTableId"],
+                    DestinationCidrBlock=p["DestinationCidrBlock"])
+                except Exception: pass
+              send(event, context, "SUCCESS")
+            except Exception as e:
+              print(e)
+              send(event, context, "FAILED", str(e)[:256])
+
+  FraSdwanCloudWanRoute:
+    Type: Custom::CrossRegionRoute
+    DependsOn: FraSdwanVpcAttachment
+    Properties:
+      ServiceToken: !GetAtt FraSdwanCloudWanRouteFunction.Arn
+      Region: eu-central-1
+      RouteTableId: !Ref FraSdwanPrivateRouteTableId
+      DestinationCidrBlock: !Ref CloudWanConnectCidrFra
+      CoreNetworkArn: !GetAtt CoreNetwork.CoreNetworkArn
+
+Outputs:
+  # Core Network identifiers
+  CoreNetworkId:
+    Description: Cloud WAN Core Network ID
+    Value: !GetAtt CoreNetwork.CoreNetworkId
+  CoreNetworkArn:
+    Description: Cloud WAN Core Network ARN
+    Value: !GetAtt CoreNetwork.CoreNetworkArn
+
+  # nv-sdwan Connect Peer BGP configuration (via custom resource lookup)
+  NvSdwanConnectPeerBgpIp1:
+    Description: BGP peer IP 1 for nv-sdwan Connect Peer
+    Value: !GetAtt NvSdwanBgpLookup.BgpPeerIp1
+  NvSdwanConnectPeerBgpIp2:
+    Description: BGP peer IP 2 for nv-sdwan Connect Peer
+    Value: !GetAtt NvSdwanBgpLookup.BgpPeerIp2
+  NvSdwanConnectPeerAsn:
+    Description: Core network ASN for nv-sdwan Connect Peer
+    Value: !GetAtt NvSdwanBgpLookup.CoreNetworkAsn
+
+  # fra-sdwan Connect Peer BGP configuration (via custom resource lookup)
+  FraSdwanConnectPeerBgpIp1:
+    Description: BGP peer IP 1 for fra-sdwan Connect Peer
+    Value: !GetAtt FraSdwanBgpLookup.BgpPeerIp1
+  FraSdwanConnectPeerBgpIp2:
+    Description: BGP peer IP 2 for fra-sdwan Connect Peer
+    Value: !GetAtt FraSdwanBgpLookup.BgpPeerIp2
+  FraSdwanConnectPeerAsn:
+    Description: Core network ASN for fra-sdwan Connect Peer
+    Value: !GetAtt FraSdwanBgpLookup.CoreNetworkAsn

@@ -1,0 +1,155 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Frankfurt SSM parameters stack (eu-central-1) - Creates SSM Parameter Store
+  entries for Frankfurt SD-WAN and branch instances. Deployed as a nested stack
+  from the Orchestration stack to eu-central-1.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: sdwan-cloudwan-workshop
+  Environment:
+    Type: String
+    Default: workshop
+  FraSdwanInstanceId:
+    Type: String
+    Description: Frankfurt SD-WAN instance ID
+  FraSdwanOutsideEip:
+    Type: String
+    Description: Frankfurt SD-WAN outside EIP
+  FraSdwanOutsidePrivateIp:
+    Type: String
+    Description: Frankfurt SD-WAN outside ENI private IP
+  FraSdwanCloudwanPeerIp1:
+    Type: String
+    Description: Cloud WAN BGP peer IP 1 for fra-sdwan
+  FraSdwanCloudwanPeerIp2:
+    Type: String
+    Description: Cloud WAN BGP peer IP 2 for fra-sdwan
+  FraSdwanCloudwanAsn:
+    Type: String
+    Description: Cloud WAN core network ASN for fra-sdwan
+  FraBranch1InstanceId:
+    Type: String
+    Description: Frankfurt branch1 instance ID
+  FraBranch1OutsideEip:
+    Type: String
+    Description: Frankfurt branch1 outside EIP
+  FraBranch1OutsidePrivateIp:
+    Type: String
+    Description: Frankfurt branch1 outside ENI private IP
+
+Resources:
+  # ===========================================================================
+  # SSM Parameters - /sdwan/fra-sdwan/
+  # ===========================================================================
+  FraSdwanInstanceIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /sdwan/fra-sdwan/instance-id
+      Type: String
+      Value: !Ref FraSdwanInstanceId
+      Description: Frankfurt SD-WAN instance ID
+      Tags:
+        Project: !Ref ProjectName
+        Environment: !Ref Environment
+        ManagedBy: cloudformation
+
+  FraSdwanOutsideEipParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /sdwan/fra-sdwan/outside-eip
+      Type: String
+      Value: !Ref FraSdwanOutsideEip
+      Description: Frankfurt SD-WAN outside EIP
+      Tags:
+        Project: !Ref ProjectName
+        Environment: !Ref Environment
+        ManagedBy: cloudformation
+
+  FraSdwanOutsidePrivateIpParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /sdwan/fra-sdwan/outside-private-ip
+      Type: String
+      Value: !Ref FraSdwanOutsidePrivateIp
+      Description: Frankfurt SD-WAN outside ENI private IP
+      Tags:
+        Project: !Ref ProjectName
+        Environment: !Ref Environment
+        ManagedBy: cloudformation
+
+  FraSdwanCloudwanPeerIp1Param:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /sdwan/fra-sdwan/cloudwan-peer-ip1
+      Type: String
+      Value: !Ref FraSdwanCloudwanPeerIp1
+      Description: Cloud WAN BGP peer IP 1 for fra-sdwan
+      Tags:
+        Project: !Ref ProjectName
+        Environment: !Ref Environment
+        ManagedBy: cloudformation
+
+  FraSdwanCloudwanPeerIp2Param:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /sdwan/fra-sdwan/cloudwan-peer-ip2
+      Type: String
+      Value: !Ref FraSdwanCloudwanPeerIp2
+      Description: Cloud WAN BGP peer IP 2 for fra-sdwan
+      Tags:
+        Project: !Ref ProjectName
+        Environment: !Ref Environment
+        ManagedBy: cloudformation
+
+  FraSdwanCloudwanAsnParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /sdwan/fra-sdwan/cloudwan-asn
+      Type: String
+      Value: !Ref FraSdwanCloudwanAsn
+      Description: Cloud WAN core network ASN for fra-sdwan
+      Tags:
+        Project: !Ref ProjectName
+        Environment: !Ref Environment
+        ManagedBy: cloudformation
+
+  # ===========================================================================
+  # SSM Parameters - /sdwan/fra-branch1/
+  # ===========================================================================
+  FraBranch1InstanceIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /sdwan/fra-branch1/instance-id
+      Type: String
+      Value: !Ref FraBranch1InstanceId
+      Description: Frankfurt branch1 instance ID
+      Tags:
+        Project: !Ref ProjectName
+        Environment: !Ref Environment
+        ManagedBy: cloudformation
+
+  FraBranch1OutsideEipParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /sdwan/fra-branch1/outside-eip
+      Type: String
+      Value: !Ref FraBranch1OutsideEip
+      Description: Frankfurt branch1 outside EIP
+      Tags:
+        Project: !Ref ProjectName
+        Environment: !Ref Environment
+        ManagedBy: cloudformation
+
+  FraBranch1OutsidePrivateIpParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /sdwan/fra-branch1/outside-private-ip
+      Type: String
+      Value: !Ref FraBranch1OutsidePrivateIp
+      Description: Frankfurt branch1 outside ENI private IP
+      Tags:
+        Project: !Ref ProjectName
+        Environment: !Ref Environment
+        ManagedBy: cloudformation
