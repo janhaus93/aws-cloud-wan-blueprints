@@ -20,8 +20,8 @@ resource "aws_networkmanager_global_network" "main" {
 resource "aws_networkmanager_core_network" "main" {
   provider = aws.virginia
 
-  global_network_id  = aws_networkmanager_global_network.main.id
-  create_base_policy = true
+  global_network_id   = aws_networkmanager_global_network.main.id
+  create_base_policy  = true
   base_policy_regions = ["us-east-1", "eu-central-1"]
 
   tags = {
@@ -37,48 +37,7 @@ resource "aws_networkmanager_core_network_policy_attachment" "main" {
   provider = aws.virginia
 
   core_network_id = aws_networkmanager_core_network.main.id
-  policy_document = jsonencode({
-    version = "2021.12"
-    "core-network-configuration" = {
-      "vpn-ecmp-support" = false
-      "asn-ranges"       = ["64512-65534"]
-      "inside-cidr-blocks" = ["10.100.0.0/16"]
-      "edge-locations" = [
-        {
-          location             = "us-east-1"
-          "inside-cidr-blocks" = ["10.100.0.0/24"]
-        },
-        {
-          location             = "eu-central-1"
-          "inside-cidr-blocks" = ["10.100.1.0/24"]
-        }
-      ]
-    }
-    segments = [
-      {
-        name                          = var.cloudwan_segment_name
-        "require-attachment-acceptance" = false
-      }
-    ]
-    "attachment-policies" = [
-      {
-        "rule-number"     = 100
-        "condition-logic" = "or"
-        conditions = [
-          {
-            type     = "tag-value"
-            operator = "equals"
-            key      = "segment"
-            value    = var.cloudwan_segment_name
-          }
-        ]
-        action = {
-          "association-method" = "tag"
-          "tag-value-of-key"  = "segment"
-        }
-      }
-    ]
-  })
+  policy_document = file("cloudwan_policy.json")
 }
 
 
@@ -124,9 +83,9 @@ resource "aws_networkmanager_vpc_attachment" "fra_sdwan" {
 resource "aws_networkmanager_connect_attachment" "nv_sdwan" {
   provider = aws.virginia
 
-  core_network_id        = aws_networkmanager_core_network.main.id
+  core_network_id         = aws_networkmanager_core_network.main.id
   transport_attachment_id = aws_networkmanager_vpc_attachment.nv_sdwan.id
-  edge_location          = "us-east-1"
+  edge_location           = "us-east-1"
 
   options {
     protocol = "NO_ENCAP"
@@ -141,9 +100,9 @@ resource "aws_networkmanager_connect_attachment" "nv_sdwan" {
 resource "aws_networkmanager_connect_attachment" "fra_sdwan" {
   provider = aws.frankfurt
 
-  core_network_id        = aws_networkmanager_core_network.main.id
+  core_network_id         = aws_networkmanager_core_network.main.id
   transport_attachment_id = aws_networkmanager_vpc_attachment.fra_sdwan.id
-  edge_location          = "eu-central-1"
+  edge_location           = "eu-central-1"
 
   options {
     protocol = "NO_ENCAP"
@@ -167,7 +126,7 @@ resource "aws_networkmanager_connect_peer" "nv_sdwan" {
   subnet_arn            = module.nv_sdwan_vpc.private_subnet_arns[0]
 
   bgp_options {
-    peer_asn = var.sdwan_bgp_asn
+    peer_asn = var.nv_sdwan_bgp_asn
   }
 
   tags = {
@@ -183,7 +142,7 @@ resource "aws_networkmanager_connect_peer" "fra_sdwan" {
   subnet_arn            = module.fra_sdwan_vpc.private_subnet_arns[0]
 
   bgp_options {
-    peer_asn = var.sdwan_bgp_asn
+    peer_asn = var.fra_sdwan_bgp_asn
   }
 
   tags = {

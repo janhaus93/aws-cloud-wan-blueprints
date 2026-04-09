@@ -151,6 +151,11 @@ EOF
 lxc file push /tmp/vyos-phase1.sh router/tmp/vyos-phase1.sh
 lxc exec router -- chmod +x /tmp/vyos-phase1.sh
 lxc exec router -- /tmp/vyos-phase1.sh
+
+# Fix VyOS config file permissions AFTER the initial commit
+# The commit above recreates files with root ownership, so chown must run after
+lxc exec router -- chown -R vyos:vyattacfg /opt/vyatta/config/active || echo "WARNING: chown failed for /opt/vyatta/config/active"
+lxc exec router -- chown -R vyos:vyattacfg /opt/vyatta/etc/quagga || echo "WARNING: chown failed for /opt/vyatta/etc/quagga"
 """
 
 

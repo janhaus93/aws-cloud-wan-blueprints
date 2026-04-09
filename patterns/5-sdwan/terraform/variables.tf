@@ -51,16 +51,76 @@ variable "vpn_psk" {
   default     = null
 }
 
-variable "sdwan_bgp_asn" {
-  description = "BGP ASN for SDWAN router"
+# Per-router BGP ASN variables (unique ASNs outside Cloud WAN range 64520-65525)
+
+variable "nv_sdwan_bgp_asn" {
+  description = "BGP ASN for nv-sdwan router (us-east-1 SDWAN hub)"
   type        = number
-  default     = 65001
+  default     = 64501
 }
 
-variable "branch1_bgp_asn" {
-  description = "BGP ASN for Branch1 router"
+variable "fra_sdwan_bgp_asn" {
+  description = "BGP ASN for fra-sdwan router (eu-central-1 SDWAN hub)"
   type        = number
-  default     = 65002
+  default     = 64502
+}
+
+variable "nv_branch1_bgp_asn" {
+  description = "BGP ASN for nv-branch1 router (us-east-1 branch)"
+  type        = number
+  default     = 64503
+}
+
+variable "nv_branch2_bgp_asn" {
+  description = "BGP ASN for nv-branch2 router (us-east-1 branch)"
+  type        = number
+  default     = 64504
+}
+
+variable "fra_branch1_bgp_asn" {
+  description = "BGP ASN for fra-branch1 router (eu-central-1 branch)"
+  type        = number
+  default     = 64505
+}
+
+# Dummy interface address variables for branch routers (segment-specific prefixes)
+
+variable "nv_branch1_prod_dummy" {
+  description = "nv-branch1 dum0 (Prod) address"
+  type        = string
+  default     = "10.250.1.1/32"
+}
+
+variable "nv_branch1_dev_dummy" {
+  description = "nv-branch1 dum1 (Dev) address"
+  type        = string
+  default     = "10.250.1.2/32"
+}
+
+variable "fra_branch1_prod_dummy" {
+  description = "fra-branch1 dum0 (Prod) address"
+  type        = string
+  default     = "10.250.2.1/32"
+}
+
+variable "fra_branch1_dev_dummy" {
+  description = "fra-branch1 dum1 (Dev) address"
+  type        = string
+  default     = "10.250.2.2/32"
+}
+
+# BGP community value variables for segment tagging
+
+variable "bgp_community_prod" {
+  description = "Community value suffix for Prod routes (used as ASN:value)"
+  type        = string
+  default     = "100"
+}
+
+variable "bgp_community_dev" {
+  description = "Community value suffix for Dev routes (used as ASN:value)"
+  type        = string
+  default     = "200"
 }
 
 variable "vpn_tunnel_cidr" {
