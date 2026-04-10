@@ -1,152 +1,138 @@
 """
-Phase 3 Lambda Handler — Verification via SSM Run Command.
+Phase 3 Lambda Handler — Cloud WAN BGP Configuration.
 
-Verifies IPsec tunnel status, BGP sessions, interfaces, and VTI connectivity
-on all 4 SD-WAN Ubuntu instances via SSM.
-
-Replicates the logic from phase3-verify.sh as an AWS Lambda function.
+Pushes tunnel-less BGP peering configuration to SDWAN VyOS routers for
+Cloud WAN Connect peers. Targets nv-sdwan and fra-sdwan only.
+Additive-only: does NOT modify or delete existing VPN/BGP configuration.
 """
 
 import os
 from ssm_utils import get_instance_configs, send_and_wait
 
 
-# Configurable via environment variables
 SSM_PARAM_PREFIX = os.environ.get("SSM_PARAM_PREFIX", "/sdwan/")
 SSM_TIMEOUT = int(os.environ.get("SSM_TIMEOUT", "300"))
+SDWAN_BGP_ASN = {
+    "nv-sdwan": 64501,
+    "fra-sdwan": 64502,
+}
+
+# Private subnet gateways (first IP in each private subnet)
+PRIVATE_SUBNET_GW = {
+    "nv-sdwan": "10.201.1.1",
+    "fra-sdwan": "10.200.1.1",
+}
+
+# Only SDWAN routers get Cloud WAN BGP config
+SDWAN_ROUTERS = ["nv-sdwan", "fra-sdwan"]
 
 
-# VPN tunnel topology — used to derive ping targets per router
-TUNNELS = [
-    {
-        "router_a": "nv-sdwan",
-        "router_b": "nv-branch1",
-        "vti_a_addr": "169.254.100.1",
-        "vti_b_addr": "169.254.100.2",
-    },
-    {
-        "router_a": "fra-sdwan",
-        "router_b": "fra-branch1",
-        "vti_a_addr": "169.254.100.13",
-        "vti_b_addr": "169.254.100.14",
-    },
-]
+def build_cloudwan_bgp_script(router_name, configs):
+    """Generate a vbash script for Cloud WAN BGP on a single SDWAN router.
 
-
-def get_ping_targets(router_name):
-    """Return the VTI peer addresses a router should ping for verification.
-
-    For each tunnel the router participates in, returns the remote VTI address.
+    For NO_ENCAP Connect peers, BGP runs directly over VPC fabric.
+    Configures static routes to Cloud WAN peer IPs and BGP neighbors.
 
     Args:
-        router_name: One of nv-sdwan, nv-branch1, fra-sdwan, fra-branch1
+        router_name: One of nv-sdwan, fra-sdwan
+        configs: Dict from get_instance_configs() with cloudwan params
 
     Returns:
-        list[str]: VTI peer IP addresses to ping
+        str: vbash script for Cloud WAN BGP configuration
     """
-    targets = []
-    for tunnel in TUNNELS:
-        if router_name == tunnel["router_a"]:
-            targets.append(tunnel["vti_b_addr"])
-        elif router_name == tunnel["router_b"]:
-            targets.append(tunnel["vti_a_addr"])
-    return targets
+    peer_ip1 = configs[router_name].get("cloudwan_peer_ip1", "")
+    peer_ip2 = configs[router_name].get("cloudwan_peer_ip2", "")
+    cloudwan_asn = configs[router_name].get("cloudwan_asn", "64512")
+    gw = PRIVATE_SUBNET_GW[router_name]
+    asn = SDWAN_BGP_ASN[router_name]
 
+    script = """#!/bin/vbash
+source /opt/vyatta/etc/functions/script-template
+configure
 
-# All routers to verify
-ROUTERS = ["nv-sdwan", "nv-branch1", "fra-sdwan", "fra-branch1"]
+# Static routes to Cloud WAN peer IPs via private subnet gateway
+set protocols static route {peer_ip1}/32 next-hop {gw}
+""".format(peer_ip1=peer_ip1, gw=gw)
 
-# VyOS op-mode command wrapper path
-VYOS_OP_WRAPPER = "/opt/vyatta/bin/vyatta-op-cmd-wrapper"
+    if peer_ip2:
+        script += "set protocols static route {peer_ip2}/32 next-hop {gw}\n".format(
+            peer_ip2=peer_ip2, gw=gw
+        )
 
+    script += """
+# BGP neighbor 1 for Cloud WAN
+set protocols bgp {asn} neighbor {peer_ip1} remote-as {cloudwan_asn}
+set protocols bgp {asn} neighbor {peer_ip1} ebgp-multihop 4
+set protocols bgp {asn} neighbor {peer_ip1} address-family ipv4-unicast
+""".format(asn=asn, peer_ip1=peer_ip1, cloudwan_asn=cloudwan_asn)
 
-def build_verify_command(router_name):
-    """Build an SSM command that runs VyOS show commands and ping tests.
+    if peer_ip2:
+        script += """
+# BGP neighbor 2 for Cloud WAN (redundancy)
+set protocols bgp {asn} neighbor {peer_ip2} remote-as {cloudwan_asn}
+set protocols bgp {asn} neighbor {peer_ip2} ebgp-multihop 4
+set protocols bgp {asn} neighbor {peer_ip2} address-family ipv4-unicast
+""".format(asn=asn, peer_ip2=peer_ip2, cloudwan_asn=cloudwan_asn)
 
-    Executes inside the LXC router container via lxc exec:
-    - show vpn ipsec sa
-    - show ip bgp summary
-    - show interfaces
-    - ping tests to VTI peer addresses
+    # Prefix-lists for Prod/Dev dummy subnets from all branches
+    script += """
+# Prefix-lists for Prod/Dev dummy subnets
+set policy prefix-list PROD-PREFIXES rule 10 action permit
+set policy prefix-list PROD-PREFIXES rule 10 prefix 10.250.1.1/32
+set policy prefix-list PROD-PREFIXES rule 20 action permit
+set policy prefix-list PROD-PREFIXES rule 20 prefix 10.250.2.1/32
 
-    Args:
-        router_name: One of nv-sdwan, nv-branch1, fra-sdwan, fra-branch1
+set policy prefix-list DEV-PREFIXES rule 10 action permit
+set policy prefix-list DEV-PREFIXES rule 10 prefix 10.250.1.2/32
+set policy prefix-list DEV-PREFIXES rule 20 action permit
+set policy prefix-list DEV-PREFIXES rule 20 prefix 10.250.2.2/32
 
-    Returns:
-        str: Shell script for SSM RunShellScript
-    """
-    ping_targets = get_ping_targets(router_name)
+# Route-map for community tagging on Cloud WAN outbound
+set policy route-map CLOUDWAN-OUT rule 10 action permit
+set policy route-map CLOUDWAN-OUT rule 10 match ip address prefix-list PROD-PREFIXES
+set policy route-map CLOUDWAN-OUT rule 10 set community {asn}:100
 
-    ping_cmds = ""
-    for target in ping_targets:
-        ping_cmds += f"""
-echo "--- Ping {target} ---"
-lxc exec router -- ping -c 3 -W 2 {target} && echo "PING_OK {target}" || echo "PING_FAIL {target}"
+set policy route-map CLOUDWAN-OUT rule 20 action permit
+set policy route-map CLOUDWAN-OUT rule 20 match ip address prefix-list DEV-PREFIXES
+set policy route-map CLOUDWAN-OUT rule 20 set community {asn}:200
+
+set policy route-map CLOUDWAN-OUT rule 100 action permit
+
+# Apply route-map as outbound policy on Cloud WAN BGP neighbors
+set protocols bgp {asn} neighbor {peer_ip1} address-family ipv4-unicast route-map export CLOUDWAN-OUT
+""".format(asn=asn, peer_ip1=peer_ip1)
+
+    if peer_ip2:
+        script += "set protocols bgp {asn} neighbor {peer_ip2} address-family ipv4-unicast route-map export CLOUDWAN-OUT\n".format(
+            asn=asn, peer_ip2=peer_ip2
+        )
+
+    script += """
+commit
+save
+exit
 """
-
-    return f"""#!/bin/bash
-echo "=== Verifying {router_name} ==="
-
-echo "--- IPsec SA Status ---"
-lxc exec router -- {VYOS_OP_WRAPPER} show vpn ipsec sa || echo "IPSEC_CHECK_FAILED"
-
-echo "--- BGP Summary ---"
-lxc exec router -- {VYOS_OP_WRAPPER} show ip bgp summary || echo "BGP_CHECK_FAILED"
-
-echo "--- Interfaces ---"
-lxc exec router -- {VYOS_OP_WRAPPER} show interfaces || echo "INTERFACES_CHECK_FAILED"
-
-echo "--- Ping Tests ---"
-{ping_cmds}
-echo "=== Verification complete for {router_name} ==="
-"""
+    return script
 
 
-def parse_verify_output(stdout, router_name):
-    """Parse the verification command output into structured results.
-
-    Args:
-        stdout: Raw stdout from the SSM command
-        router_name: Router name for ping target lookup
-
-    Returns:
-        dict: Verification details with ipsec, bgp, interfaces, and ping results
-    """
-    ping_targets = get_ping_targets(router_name)
-
-    ping_results = {}
-    for target in ping_targets:
-        if f"PING_OK {target}" in stdout:
-            ping_results[target] = "ok"
-        elif f"PING_FAIL {target}" in stdout:
-            ping_results[target] = "fail"
-        else:
-            ping_results[target] = "unknown"
-
-    return {
-        "ipsec": "fail" if "IPSEC_CHECK_FAILED" in stdout else "ok",
-        "bgp": "fail" if "BGP_CHECK_FAILED" in stdout else "ok",
-        "interfaces": "fail" if "INTERFACES_CHECK_FAILED" in stdout else "ok",
-        "ping": ping_results,
-    }
+def build_ssm_command(bgp_script):
+    """Wrap a vbash script in an SSM command."""
+    return """#!/bin/bash
+set -e
+cat > /tmp/vyos-cloudwan-bgp.sh <<'BGPEOF'
+{bgp_script}
+BGPEOF
+lxc file push /tmp/vyos-cloudwan-bgp.sh router/tmp/vyos-cloudwan-bgp.sh
+lxc exec router -- chmod +x /tmp/vyos-cloudwan-bgp.sh
+lxc exec router -- /tmp/vyos-cloudwan-bgp.sh
+""".format(bgp_script=bgp_script)
 
 
 def handler(event, context):
-    """Lambda handler for Phase 3 verification.
+    """Lambda handler for Phase 3 Cloud WAN BGP configuration.
 
-    Reads instance configs from SSM Parameter Store, runs VyOS show commands
-    and ping tests on each router via SSM, and returns structured results.
-
-    Args:
-        event: Lambda event (passed from Step Functions, may contain prior phase results)
-        context: Lambda context object
-
-    Returns:
-        dict: Structured result with per-instance verification status:
-            - phase: "phase3"
-            - results: dict keyed by instance name with status and verification details
-            - success_count: number of successful instances
-            - fail_count: number of failed instances
+    Reads instance configs and Cloud WAN Connect Peer params from SSM,
+    generates per-router vbash scripts, and executes via SSM.
     """
     configs = get_instance_configs(param_prefix=SSM_PARAM_PREFIX)
 
@@ -154,7 +140,7 @@ def handler(event, context):
     success_count = 0
     fail_count = 0
 
-    for router_name in ROUTERS:
+    for router_name in SDWAN_ROUTERS:
         if router_name not in configs:
             results[router_name] = {
                 "status": "Failed",
@@ -162,7 +148,6 @@ def handler(event, context):
                 "instance_id": "",
                 "stdout": "",
                 "stderr": f"Instance config not found for {router_name}",
-                "details": {},
             }
             fail_count += 1
             continue
@@ -170,18 +155,15 @@ def handler(event, context):
         instance_id = configs[router_name]["instance_id"]
         region = configs[router_name]["region"]
 
-        verify_cmd = build_verify_command(router_name)
+        bgp_script = build_cloudwan_bgp_script(router_name, configs)
+        ssm_cmd = build_ssm_command(bgp_script)
 
         result = send_and_wait(
             instance_id=instance_id,
             region=region,
-            commands=verify_cmd,
+            commands=ssm_cmd,
             timeout=SSM_TIMEOUT,
         )
-
-        # Parse verification output into structured details
-        details = parse_verify_output(result.get("stdout", ""), router_name)
-        result["details"] = details
 
         results[router_name] = result
 

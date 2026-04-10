@@ -26,7 +26,7 @@ locals {
       public_subnet_2 = "10.10.2.0/24"
       private_subnet  = "10.10.1.0/24"
       az              = "eu-central-1a"
-      segment         = "production"
+      segment         = "Prod"
     }
     sdwan = {
       vpc_cidr        = "10.200.0.0/16"
@@ -46,7 +46,7 @@ locals {
       public_subnet_2 = "10.20.2.0/24"
       private_subnet  = "10.20.1.0/24"
       az              = "us-east-1a"
-      segment         = "production"
+      segment         = "Prod"
     }
     branch2 = {
       vpc_cidr        = "10.30.0.0/20"
@@ -54,7 +54,7 @@ locals {
       public_subnet_2 = "10.30.2.0/24"
       private_subnet  = "10.30.1.0/24"
       az              = "us-east-1a"
-      segment         = "development"
+      segment         = "Dev"
     }
     sdwan = {
       vpc_cidr        = "10.201.0.0/16"

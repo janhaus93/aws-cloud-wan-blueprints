@@ -69,7 +69,7 @@ Resources:
       PolicyDocument:
         version: '2021.12'
         core-network-configuration:
-          vpn-ecmp-support: true
+          vpn-ecmp-support: false
           asn-ranges:
             - 64512-65534
           inside-cidr-blocks:
@@ -84,17 +84,121 @@ Resources:
                 - 10.100.1.0/24
         segments:
           - name: !Ref CloudWanSegmentName
+            description: SDWAN segment for edge VPCs
             require-attachment-acceptance: false
+          - name: Prod
+            description: Production segment for branch VPCs
+            require-attachment-acceptance: false
+          - name: Dev
+            description: Development segment for test VPCs
+            require-attachment-acceptance: false
+        segment-actions:
+          - action: share
+            mode: attachment-route
+            segment: !Ref CloudWanSegmentName
+            share-with:
+              - Prod
+            routing-policy-names:
+              - filterProdRoutes
+          - action: share
+            mode: attachment-route
+            segment: !Ref CloudWanSegmentName
+            share-with:
+              - Dev
+            routing-policy-names:
+              - filterDevRoutes
         attachment-policies:
           - rule-number: 100
-            action:
-              association-method: tag
-              tag-value-of-key: segment
+            condition-logic: or
             conditions:
               - type: tag-value
                 operator: equals
                 key: segment
                 value: !Ref CloudWanSegmentName
+            action:
+              association-method: constant
+              segment: !Ref CloudWanSegmentName
+          - rule-number: 200
+            condition-logic: or
+            conditions:
+              - type: tag-value
+                operator: equals
+                key: segment
+                value: Prod
+            action:
+              association-method: constant
+              segment: Prod
+          - rule-number: 300
+            condition-logic: or
+            conditions:
+              - type: tag-value
+                operator: equals
+                key: segment
+                value: Dev
+            action:
+              association-method: constant
+              segment: Dev
+        routing-policies:
+          - routing-policy-name: filterProdRoutes
+            routing-policy-direction: outbound
+            routing-policy-number: 100
+            routing-policy-rules:
+              - rule-number: 100
+                rule-definition:
+                  match-conditions:
+                    - type: community-in-list
+                      value: '64501:100'
+                    - type: community-in-list
+                      value: '64502:100'
+                  condition-logic: or
+                  action:
+                    type: allow
+              - rule-number: 200
+                rule-definition:
+                  match-conditions:
+                    - type: prefix-in-cidr
+                      value: '0.0.0.0/0'
+                  condition-logic: or
+                  action:
+                    type: drop
+              - rule-number: 300
+                rule-definition:
+                  match-conditions:
+                    - type: prefix-equals
+                      value: '0.0.0.0/0'
+                  condition-logic: or
+                  action:
+                    type: drop
+          - routing-policy-name: filterDevRoutes
+            routing-policy-direction: outbound
+            routing-policy-number: 200
+            routing-policy-rules:
+              - rule-number: 100
+                rule-definition:
+                  match-conditions:
+                    - type: community-in-list
+                      value: '64501:200'
+                    - type: community-in-list
+                      value: '64502:200'
+                  condition-logic: or
+                  action:
+                    type: allow
+              - rule-number: 200
+                rule-definition:
+                  match-conditions:
+                    - type: prefix-in-cidr
+                      value: '0.0.0.0/0'
+                  condition-logic: or
+                  action:
+                    type: drop
+              - rule-number: 300
+                rule-definition:
+                  match-conditions:
+                    - type: prefix-equals
+                      value: '0.0.0.0/0'
+                  condition-logic: or
+                  action:
+                    type: drop
       Tags:
         - Key: Name
           Value: !Sub '${ProjectName}-core-network'

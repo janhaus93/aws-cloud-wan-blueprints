@@ -121,10 +121,13 @@ output "vpn_psk" {
 }
 
 output "vpn_bgp_asns" {
-  description = "BGP ASNs for VPN routers"
+  description = "BGP ASNs for VPN routers (per-router unique ASNs)"
   value = {
-    sdwan   = var.sdwan_bgp_asn
-    branch1 = var.branch1_bgp_asn
+    nv_sdwan    = var.nv_sdwan_bgp_asn
+    fra_sdwan   = var.fra_sdwan_bgp_asn
+    nv_branch1  = var.nv_branch1_bgp_asn
+    nv_branch2  = var.nv_branch2_bgp_asn
+    fra_branch1 = var.fra_branch1_bgp_asn
   }
 }
 

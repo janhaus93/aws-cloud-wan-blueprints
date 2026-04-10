@@ -119,6 +119,12 @@ Resources:
                 Resource:
                   - !Sub 'arn:aws:ssm:*:${AWS::AccountId}:parameter/sdwan'
                   - !Sub 'arn:aws:ssm:*:${AWS::AccountId}:parameter/sdwan/*'
+              - Sid: SSMPutParameter
+                Effect: Allow
+                Action:
+                  - ssm:PutParameter
+                Resource:
+                  - !Sub 'arn:aws:ssm:*:${AWS::AccountId}:parameter/sdwan/*'
               - Sid: CloudWatchLogs
                 Effect: Allow
                 Action:
@@ -571,9 +577,9 @@ Resources:
             "Wait_After_Phase2": {
               "Type": "Wait",
               "Seconds": ${Phase2WaitSeconds},
-              "Next": "Phase3_Verify"
+              "Next": "Phase3_CloudWanBgp"
             },
-            "Phase3_Verify": {
+            "Phase3_CloudWanBgp": {
               "Type": "Task",
               "Resource": "${Phase3Lambda.Arn}",
               "Retry": [
@@ -597,9 +603,9 @@ Resources:
             "Wait_After_Phase3": {
               "Type": "Wait",
               "Seconds": ${Phase3WaitSeconds},
-              "Next": "Phase4_CloudWanBgp"
+              "Next": "Phase4_Verify"
             },
-            "Phase4_CloudWanBgp": {
+            "Phase4_Verify": {
               "Type": "Task",
               "Resource": "${Phase4Lambda.Arn}",
               "Retry": [

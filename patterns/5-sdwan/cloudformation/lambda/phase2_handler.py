@@ -35,10 +35,22 @@ TUNNELS = [
 
 # Per-router configuration: loopback, ASN, role
 ROUTER_CONFIG = {
-    "nv-sdwan":    {"loopback": "10.255.0.1",  "asn": 65001, "role": "sdwan"},
-    "nv-branch1":  {"loopback": "10.255.1.1",  "asn": 65002, "role": "branch"},
-    "fra-sdwan":   {"loopback": "10.255.10.1", "asn": 65001, "role": "sdwan"},
-    "fra-branch1": {"loopback": "10.255.11.1", "asn": 65002, "role": "branch"},
+    "nv-sdwan":    {"loopback": "10.255.0.1",  "asn": 64501, "role": "sdwan"},
+    "nv-branch1":  {"loopback": "10.255.1.1",  "asn": 64503, "role": "branch"},
+    "fra-sdwan":   {"loopback": "10.255.10.1", "asn": 64502, "role": "sdwan"},
+    "fra-branch1": {"loopback": "10.255.11.1", "asn": 64505, "role": "branch"},
+}
+
+# Dummy interface addresses for branch routers (Prod=dum0, Dev=dum1)
+DUMMY_INTERFACES = {
+    "nv-branch1": [
+        {"iface": "dum0", "addr": "10.250.1.1/32"},
+        {"iface": "dum1", "addr": "10.250.1.2/32"},
+    ],
+    "fra-branch1": [
+        {"iface": "dum0", "addr": "10.250.2.1/32"},
+        {"iface": "dum1", "addr": "10.250.2.2/32"},
+    ],
 }
 
 
@@ -105,6 +117,18 @@ configure
 # Loopback
 set interfaces loopback lo address {loopback}/32
 """.format(loopback=loopback)
+
+    # Dummy interfaces for branch routers (Prod/Dev segments)
+    dummy_bgp_networks = ""
+    if router_name in DUMMY_INTERFACES:
+        for dum in DUMMY_INTERFACES[router_name]:
+            script += """
+# Dummy interface for segment traffic
+set interfaces dummy {iface} address {addr}
+""".format(iface=dum["iface"], addr=dum["addr"])
+            dummy_bgp_networks += "set protocols bgp {asn} network {addr}\n".format(
+                asn=asn, addr=dum["addr"]
+            )
 
     # VTI interfaces
     for t in tunnel_infos:
@@ -177,12 +201,13 @@ set protocols bgp {asn} neighbor {peer_vti_ip} update-source {my_vti_ip}
     # BGP network and router-id
     script += """
 set protocols bgp {asn} network {loopback}/32
-set protocols bgp {asn} parameters router-id {loopback}
+{dummy_bgp_networks}set protocols bgp {asn} parameters router-id {loopback}
+set protocols bgp {asn} address-family ipv4-unicast redistribute connected
 
 commit
 save
 exit
-""".format(asn=asn, loopback=loopback)
+""".format(asn=asn, loopback=loopback, dummy_bgp_networks=dummy_bgp_networks)
 
     return script
 

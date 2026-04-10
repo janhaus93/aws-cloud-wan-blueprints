@@ -12,7 +12,10 @@ from ssm_utils import get_instance_configs, send_and_wait
 
 SSM_PARAM_PREFIX = os.environ.get("SSM_PARAM_PREFIX", "/sdwan/")
 SSM_TIMEOUT = int(os.environ.get("SSM_TIMEOUT", "300"))
-SDWAN_BGP_ASN = 65001
+SDWAN_BGP_ASN = {
+    "nv-sdwan": 64501,
+    "fra-sdwan": 64502,
+}
 
 # Private subnet gateways (first IP in each private subnet)
 PRIVATE_SUBNET_GW = {
@@ -41,6 +44,7 @@ def build_cloudwan_bgp_script(router_name, configs):
     peer_ip2 = configs[router_name].get("cloudwan_peer_ip2", "")
     cloudwan_asn = configs[router_name].get("cloudwan_asn", "64512")
     gw = PRIVATE_SUBNET_GW[router_name]
+    asn = SDWAN_BGP_ASN[router_name]
 
     script = """#!/bin/vbash
 source /opt/vyatta/etc/functions/script-template
@@ -60,7 +64,7 @@ set protocols static route {peer_ip1}/32 next-hop {gw}
 set protocols bgp {asn} neighbor {peer_ip1} remote-as {cloudwan_asn}
 set protocols bgp {asn} neighbor {peer_ip1} ebgp-multihop 4
 set protocols bgp {asn} neighbor {peer_ip1} address-family ipv4-unicast
-""".format(asn=SDWAN_BGP_ASN, peer_ip1=peer_ip1, cloudwan_asn=cloudwan_asn)
+""".format(asn=asn, peer_ip1=peer_ip1, cloudwan_asn=cloudwan_asn)
 
     if peer_ip2:
         script += """
@@ -68,7 +72,40 @@ set protocols bgp {asn} neighbor {peer_ip1} address-family ipv4-unicast
 set protocols bgp {asn} neighbor {peer_ip2} remote-as {cloudwan_asn}
 set protocols bgp {asn} neighbor {peer_ip2} ebgp-multihop 4
 set protocols bgp {asn} neighbor {peer_ip2} address-family ipv4-unicast
-""".format(asn=SDWAN_BGP_ASN, peer_ip2=peer_ip2, cloudwan_asn=cloudwan_asn)
+""".format(asn=asn, peer_ip2=peer_ip2, cloudwan_asn=cloudwan_asn)
+
+    # Prefix-lists for Prod/Dev dummy subnets from all branches
+    script += """
+# Prefix-lists for Prod/Dev dummy subnets
+set policy prefix-list PROD-PREFIXES rule 10 action permit
+set policy prefix-list PROD-PREFIXES rule 10 prefix 10.250.1.1/32
+set policy prefix-list PROD-PREFIXES rule 20 action permit
+set policy prefix-list PROD-PREFIXES rule 20 prefix 10.250.2.1/32
+
+set policy prefix-list DEV-PREFIXES rule 10 action permit
+set policy prefix-list DEV-PREFIXES rule 10 prefix 10.250.1.2/32
+set policy prefix-list DEV-PREFIXES rule 20 action permit
+set policy prefix-list DEV-PREFIXES rule 20 prefix 10.250.2.2/32
+
+# Route-map for community tagging on Cloud WAN outbound
+set policy route-map CLOUDWAN-OUT rule 10 action permit
+set policy route-map CLOUDWAN-OUT rule 10 match ip address prefix-list PROD-PREFIXES
+set policy route-map CLOUDWAN-OUT rule 10 set community {asn}:100
+
+set policy route-map CLOUDWAN-OUT rule 20 action permit
+set policy route-map CLOUDWAN-OUT rule 20 match ip address prefix-list DEV-PREFIXES
+set policy route-map CLOUDWAN-OUT rule 20 set community {asn}:200
+
+set policy route-map CLOUDWAN-OUT rule 100 action permit
+
+# Apply route-map as outbound policy on Cloud WAN BGP neighbors
+set protocols bgp {asn} neighbor {peer_ip1} address-family ipv4-unicast route-map export CLOUDWAN-OUT
+""".format(asn=asn, peer_ip1=peer_ip1)
+
+    if peer_ip2:
+        script += "set protocols bgp {asn} neighbor {peer_ip2} address-family ipv4-unicast route-map export CLOUDWAN-OUT\n".format(
+            asn=asn, peer_ip2=peer_ip2
+        )
 
     script += """
 commit
