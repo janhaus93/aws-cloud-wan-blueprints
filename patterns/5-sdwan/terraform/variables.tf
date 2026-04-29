@@ -71,56 +71,10 @@ variable "nv_branch1_bgp_asn" {
   default     = 64503
 }
 
-variable "nv_branch2_bgp_asn" {
-  description = "BGP ASN for nv-branch2 router (us-east-1 branch)"
-  type        = number
-  default     = 64504
-}
-
 variable "fra_branch1_bgp_asn" {
   description = "BGP ASN for fra-branch1 router (eu-central-1 branch)"
   type        = number
   default     = 64505
-}
-
-# Dummy interface address variables for branch routers (segment-specific prefixes)
-
-variable "nv_branch1_prod_dummy" {
-  description = "nv-branch1 dum0 (Prod) address"
-  type        = string
-  default     = "10.250.1.1/32"
-}
-
-variable "nv_branch1_dev_dummy" {
-  description = "nv-branch1 dum1 (Dev) address"
-  type        = string
-  default     = "10.250.1.2/32"
-}
-
-variable "fra_branch1_prod_dummy" {
-  description = "fra-branch1 dum0 (Prod) address"
-  type        = string
-  default     = "10.250.2.1/32"
-}
-
-variable "fra_branch1_dev_dummy" {
-  description = "fra-branch1 dum1 (Dev) address"
-  type        = string
-  default     = "10.250.2.2/32"
-}
-
-# BGP community value variables for segment tagging
-
-variable "bgp_community_prod" {
-  description = "Community value suffix for Prod routes (used as ASN:value)"
-  type        = string
-  default     = "100"
-}
-
-variable "bgp_community_dev" {
-  description = "Community value suffix for Dev routes (used as ASN:value)"
-  type        = string
-  default     = "200"
 }
 
 variable "vpn_tunnel_cidr" {
@@ -172,5 +126,37 @@ variable "cloudwan_connect_cidr_fra" {
 variable "cloudwan_segment_name" {
   description = "Cloud WAN segment name for SDWAN attachments"
   type        = string
-  default     = "sdwan"
+  default     = "Hybrid"
+}
+
+# =============================================================================
+# Branch EC2 Test Instances — Feature Gate and Subnet CIDRs
+# =============================================================================
+
+variable "enable_test_instances" {
+  description = "Enable provisioning of branch test EC2 instances and the nv-prod-vpc test EC2"
+  type        = bool
+  default     = true
+}
+
+variable "nv_branch1_test_subnet_cidr" {
+  description = "CIDR for the nv-branch1 test subnet (must be a /28 inside 10.20.0.0/20)"
+  type        = string
+  default     = "10.20.3.0/28"
+
+  validation {
+    condition     = can(cidrnetmask(var.nv_branch1_test_subnet_cidr)) && tonumber(split("/", var.nv_branch1_test_subnet_cidr)[1]) == 28
+    error_message = "nv_branch1_test_subnet_cidr must be a valid /28 CIDR block."
+  }
+}
+
+variable "fra_branch1_test_subnet_cidr" {
+  description = "CIDR for the fra-branch1 test subnet (must be a /28 inside 10.10.0.0/20)"
+  type        = string
+  default     = "10.10.3.0/28"
+
+  validation {
+    condition     = can(cidrnetmask(var.fra_branch1_test_subnet_cidr)) && tonumber(split("/", var.fra_branch1_test_subnet_cidr)[1]) == 28
+    error_message = "fra_branch1_test_subnet_cidr must be a valid /28 CIDR block."
+  }
 }
