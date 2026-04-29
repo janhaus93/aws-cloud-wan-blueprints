@@ -4,7 +4,7 @@ Deploy a multi-region SD-WAN overlay network on AWS with Cloud WAN backbone usin
 
 ## Current Architecture
 
-The active blueprint follows [`architecture-simplification-prod-vpc`](.kiro/specs/architecture-simplification-prod-vpc/design.md). Earlier specs (`cloudwan-sdwan-bgp-integration`, `sdwan-bgp-segmentation`, `branch-ec2-test-instances`) are retained for history and are partially superseded by the refactor — see the **Superseded Prior Specs** section of the newer spec's `design.md` for details.
+The active blueprint implements a simplified two-segment Cloud WAN topology with a direct-attached prod VPC. The design collapses what used to be a three-segment (sdwan/Prod/Dev), community-tagged routing model into plain eBGP between branches and Cloud WAN, with segment sharing handled entirely by Cloud WAN policy actions.
 
 ## Architecture
 
@@ -75,12 +75,12 @@ After `terraform apply` completes, the `start_orchestration_command` output prov
 
 The state machine runs 4 phases automatically:
 
-| Phase   | Lambda         | What It Does                                                                                      | Wait After |
-|---------|----------------|---------------------------------------------------------------------------------------------------|------------|
-| Phase 1 | `sdwan-phase1` | Installs packages, initializes LXD, deploys VyOS container, fixes VyOS config file permissions    | 60s        |
-| Phase 2 | `sdwan-phase2` | Pushes IPsec tunnel and plain eBGP peering config; advertises VPC CIDR + test-subnet per branch  | 90s        |
-| Phase 3 | `sdwan-phase3` | Cloud WAN BGP config — plain eBGP neighbors on SDWAN routers (no prefix-lists, no route-maps)    | 30s        |
-| Phase 4 | `sdwan-phase4` | Verification: IPsec, BGP, Cloud WAN BGP, connectivity — checks all sessions and persists results | —          |
+| Phase   | Lambda         | What It Does                                                                                                                                                                       | Wait After |
+|---------|----------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------|
+| Phase 1 | `sdwan-phase1` | Installs packages, initializes LXD, deploys VyOS container with base DHCP config                                                                                                   | 60s        |
+| Phase 2 | `sdwan-phase2` | Pushes IPsec tunnel (IKEv2, MOBIKE disabled) and plain eBGP peering; installs a static route + `redistribute static` so each branch advertises its `/28` test subnet into BGP; scopes `redistribute connected/static` via the `SAFE-REDISTRIBUTE` route-map so only RFC1918 prefixes enter BGP; restarts strongSwan after commit so the daemon picks up the new config | 90s        |
+| Phase 3 | `sdwan-phase3` | Configures tunnel-less eBGP neighbors on SDWAN routers toward their Cloud WAN Connect peers, with `next-hop-self` (so branch prefixes propagate with the SDWAN hub's Connect-peer IP as next-hop) and `soft-reconfiguration inbound` (for non-disruptive policy reloads) | 30s        |
+| Phase 4 | `sdwan-phase4` | Verifies IPsec SAs, BGP sessions (VPN + Cloud WAN), interface state, VTI ping; persists results to SSM                                                                             | —          |
 
 ## Project Structure
 
@@ -102,7 +102,9 @@ The state machine runs 4 phases automatically:
 ├── cloudwan_policy.json       # Cloud WAN core network policy with two segments (Hybrid, Prod),
 │                              #   two bidirectional share actions, no routing policies
 ├── ssm-parameters.tf          # SSM Parameter Store for Lambda runtime config
-│                              #   (instance IDs, EIPs, private IPs, Cloud WAN peer IPs/ASNs)
+│                              #   (instance IDs, EIPs, private IPs, Cloud WAN peer IPs/ASNs;
+│                              #    per-branch test-subnet CIDRs and inside-gateway-ip live in
+│                              #    branch_test_instances.tf)
 ├── orchestration.tf           # Lambda functions (Phase 1-4), IAM roles, Step Functions
 │                              #   state machine, CloudWatch log group
 │
@@ -186,6 +188,10 @@ Each branch router advertises exactly three networks: its loopback `/32`, its Br
 
 No dummy interfaces. No per-segment prefixes. No community tagging.
 
+The test subnet sits on a different subnet than the VyOS internal ENI, so VyOS cannot advertise it via `network` alone (strongSwan only advertises prefixes with a matching RIB entry). Phase 2 therefore installs a VyOS static route for the test subnet with next-hop set to the AWS VPC router (the `.1` of the VyOS internal subnet, published via SSM parameter `/sdwan/<branch>/inside-gateway-ip`) and then uses `redistribute static route-map SAFE-REDISTRIBUTE` to push the /28 into BGP.
+
+The `SAFE-REDISTRIBUTE` route-map and prefix-list permit only RFC1918 ranges (`10/8`, `172.16/12`, `192.168/16`) — any non-private prefix (a DHCP-learned default route, link-local, public space) is implicitly denied. This prevents `0.0.0.0/0` or similar noise from ever leaking into Cloud WAN via `redistribute connected`.
+
 ### Network CIDRs
 
 | VPC              | Region        | CIDR            |
@@ -210,7 +216,7 @@ The `0.0.0.0/0 → NAT gateway` default route is preserved on every private rout
 
 ## Reachability Verification
 
-After `terraform apply` and the Step Functions run both succeed, verify the five positive probes via SSM Session Manager:
+After `terraform apply` and the Step Functions run both succeed, verify reachability with `ping` via SSM Session Manager. Source/destination pairs:
 
 | Probe | From                  | To                    |
 |-------|-----------------------|-----------------------|
@@ -220,7 +226,26 @@ After `terraform apply` and the Step Functions run both succeed, verify the five
 | 4     | nv-prod-ec2           | nv-branch1 test EC2   |
 | 5     | nv-prod-ec2           | fra-branch1 test EC2  |
 
-Probe commands are documented in `.kiro/specs/architecture-simplification-prod-vpc/verification.md`.
+Get the instance IDs and private IPs from Terraform outputs:
+
+```bash
+terraform output nv_branch1_test_ec2_instance_id
+terraform output fra_branch1_test_ec2_instance_id
+terraform output nv_prod_ec2_instance_id
+terraform output nv_branch1_test_ec2_private_ip
+terraform output fra_branch1_test_ec2_private_ip
+terraform output nv_prod_ec2_private_ip
+```
+
+Then open an SSM session to the source instance and ping the destination's private IP:
+
+```bash
+aws ssm start-session --target <source-instance-id> --region <source-region>
+# inside the session:
+ping -c 4 <destination-private-ip>
+```
+
+Expected: 4/4 ICMP replies on every probe. TCP/22 is intentionally closed on the test EC2s (they have no sshd), so `nc -vz <ip> 22` returning `Connection refused` is also a valid L3-reachability signal.
 
 ## Cleanup
 
