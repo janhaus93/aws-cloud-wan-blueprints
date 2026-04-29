@@ -141,49 +141,6 @@ module "nv_branch1_vpc" {
 }
 
 # -----------------------------------------------------------------------------
-# nv-branch2-vpc - Branch Office 2 North Virginia
-# -----------------------------------------------------------------------------
-
-module "nv_branch2_vpc" {
-  source  = "terraform-aws-modules/vpc/aws"
-  version = "~> 5.0"
-
-  providers = {
-    aws = aws.virginia
-  }
-
-  name = "nv-branch2-vpc"
-  cidr = local.virginia.branch2.vpc_cidr
-
-  azs             = [local.virginia.branch2.az]
-  public_subnets  = [local.virginia.branch2.public_subnet, local.virginia.branch2.public_subnet_2]
-  private_subnets = [local.virginia.branch2.private_subnet]
-
-  public_subnet_names  = ["nv-branch2-vpc-public-1a", "nv-branch2-vpc-public-2-1a"]
-  private_subnet_names = ["nv-branch2-vpc-private-1a"]
-
-  enable_nat_gateway     = true
-  single_nat_gateway     = true
-  one_nat_gateway_per_az = false
-
-  enable_dns_hostnames = true
-  enable_dns_support   = true
-
-  tags = {
-    Segment = local.virginia.branch2.segment
-    Region  = "virginia"
-  }
-
-  public_subnet_tags = {
-    Type = "public"
-  }
-
-  private_subnet_tags = {
-    Type = "private"
-  }
-}
-
-# -----------------------------------------------------------------------------
 # nv-sdwan-vpc - SD-WAN Appliance North Virginia
 # -----------------------------------------------------------------------------
 

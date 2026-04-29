@@ -17,18 +17,13 @@
   },
   "segments": [
     {
-      "name": "sdwan",
-      "description": "SDWAN segment for edge VPCs",
+      "name": "Hybrid",
+      "description": "SD-WAN-facing segment for hub VPCs",
       "require-attachment-acceptance": false
     },
     {
       "name": "Prod",
-      "description": "Production segment for branch VPCs",
-      "require-attachment-acceptance": false
-    },
-    {
-      "name": "Dev",
-      "description": "Development segment for test VPCs",
+      "description": "Direct-attached prod segment",
       "require-attachment-acceptance": false
     }
   ],
@@ -36,16 +31,14 @@
     {
       "action": "share",
       "mode": "attachment-route",
-      "segment": "sdwan",
-      "share-with": ["Prod"],
-      "routing-policy-names": ["filterProdRoutes"]
+      "segment": "Hybrid",
+      "share-with": ["Prod"]
     },
     {
       "action": "share",
       "mode": "attachment-route",
-      "segment": "sdwan",
-      "share-with": ["Dev"],
-      "routing-policy-names": ["filterDevRoutes"]
+      "segment": "Prod",
+      "share-with": ["Hybrid"]
     }
   ],
   "attachment-policies": [
@@ -57,12 +50,12 @@
           "type": "tag-value",
           "operator": "equals",
           "key": "segment",
-          "value": "sdwan"
+          "value": "Hybrid"
         }
       ],
       "action": {
         "association-method": "constant",
-        "segment": "sdwan"
+        "segment": "Hybrid"
       }
     },
     {
@@ -80,136 +73,6 @@
         "association-method": "constant",
         "segment": "Prod"
       }
-    },
-    {
-      "rule-number": 300,
-      "condition-logic": "or",
-      "conditions": [
-        {
-          "type": "tag-value",
-          "operator": "equals",
-          "key": "segment",
-          "value": "Dev"
-        }
-      ],
-      "action": {
-        "association-method": "constant",
-        "segment": "Dev"
-      }
-    }
-  ],
-  "routing-policies": [
-    {
-      "routing-policy-name": "filterProdRoutes",
-      "routing-policy-direction": "outbound",
-      "routing-policy-number": 100,
-      "routing-policy-rules": [
-        {
-          "rule-number": 100,
-          "rule-definition": {
-            "match-conditions": [
-              {
-                "type": "community-in-list",
-                "value": "64501:100"
-              },
-              {
-                "type": "community-in-list",
-                "value": "64502:100"
-              }
-            ],
-            "condition-logic": "or",
-            "action": {
-              "type": "allow"
-            }
-          }
-        },
-        {
-          "rule-number": 200,
-          "rule-definition": {
-            "match-conditions": [
-              {
-                "type": "prefix-in-cidr",
-                "value": "0.0.0.0/0"
-              }
-            ],
-            "condition-logic": "or",
-            "action": {
-              "type": "drop"
-            }
-          }
-        },
-        {
-          "rule-number": 300,
-          "rule-definition": {
-            "match-conditions": [
-              {
-                "type": "prefix-equals",
-                "value": "0.0.0.0/0"
-              }
-            ],
-            "condition-logic": "or",
-            "action": {
-              "type": "drop"
-            }
-          }
-        }
-      ]
-    },
-    {
-      "routing-policy-name": "filterDevRoutes",
-      "routing-policy-direction": "outbound",
-      "routing-policy-number": 200,
-      "routing-policy-rules": [
-        {
-          "rule-number": 100,
-          "rule-definition": {
-            "match-conditions": [
-              {
-                "type": "community-in-list",
-                "value": "64501:200"
-              },
-              {
-                "type": "community-in-list",
-                "value": "64502:200"
-              }
-            ],
-            "condition-logic": "or",
-            "action": {
-              "type": "allow"
-            }
-          }
-        },
-        {
-          "rule-number": 200,
-          "rule-definition": {
-            "match-conditions": [
-              {
-                "type": "prefix-in-cidr",
-                "value": "0.0.0.0/0"
-              }
-            ],
-            "condition-logic": "or",
-            "action": {
-              "type": "drop"
-            }
-          }
-        },
-        {
-          "rule-number": 300,
-          "rule-definition": {
-            "match-conditions": [
-              {
-                "type": "prefix-equals",
-                "value": "0.0.0.0/0"
-              }
-            ],
-            "condition-logic": "or",
-            "action": {
-              "type": "drop"
-            }
-          }
-        }
-      ]
     }
   ]
 }

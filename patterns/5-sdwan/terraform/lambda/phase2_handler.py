@@ -41,16 +41,10 @@ ROUTER_CONFIG = {
     "fra-branch1": {"loopback": "10.255.11.1", "asn": 64505, "role": "branch"},
 }
 
-# Dummy interface addresses for branch routers (Prod=dum0, Dev=dum1)
-DUMMY_INTERFACES = {
-    "nv-branch1": [
-        {"iface": "dum0", "addr": "10.250.1.1/32"},
-        {"iface": "dum1", "addr": "10.250.1.2/32"},
-    ],
-    "fra-branch1": [
-        {"iface": "dum0", "addr": "10.250.2.1/32"},
-        {"iface": "dum1", "addr": "10.250.2.2/32"},
-    ],
+# Branch VPC CIDRs for BGP network advertisement
+BRANCH_VPC_CIDR = {
+    "nv-branch1": "10.20.0.0/20",
+    "fra-branch1": "10.10.0.0/20",
 }
 
 
@@ -118,16 +112,26 @@ configure
 set interfaces loopback lo address {loopback}/32
 """.format(loopback=loopback)
 
-    # Dummy interfaces for branch routers (Prod/Dev segments)
-    dummy_bgp_networks = ""
-    if router_name in DUMMY_INTERFACES:
-        for dum in DUMMY_INTERFACES[router_name]:
-            script += """
-# Dummy interface for segment traffic
-set interfaces dummy {iface} address {addr}
-""".format(iface=dum["iface"], addr=dum["addr"])
-            dummy_bgp_networks += "set protocols bgp {asn} network {addr}\n".format(
-                asn=asn, addr=dum["addr"]
+    # Branch VPC CIDR + test-subnet BGP advertisements (branches only)
+    branch_bgp_networks = ""
+    if router_name in BRANCH_VPC_CIDR:
+        branch_bgp_networks += "set protocols bgp {asn} network {cidr}\n".format(
+            asn=asn, cidr=BRANCH_VPC_CIDR[router_name]
+        )
+        test_subnet = instance_configs[router_name].get("test_subnet")
+        inside_gateway_ip = instance_configs[router_name].get("inside_gateway_ip")
+        if test_subnet and inside_gateway_ip:
+            # The test subnet is on a DIFFERENT subnet from the VyOS internal
+            # ENI. Without a matching RIB entry VyOS refuses to advertise via
+            # `network`, so install a static route toward the AWS VPC router
+            # (.1 of the inside subnet) first.
+            branch_bgp_networks += (
+                "set protocols static route {cidr} next-hop {gw}\n".format(
+                    cidr=test_subnet, gw=inside_gateway_ip
+                )
+            )
+            branch_bgp_networks += "set protocols bgp {asn} network {cidr}\n".format(
+                asn=asn, cidr=test_subnet
             )
 
     # VTI interfaces
@@ -149,6 +153,7 @@ set vpn ipsec esp-group ESP-GROUP proposal 1 encryption aes256
 set vpn ipsec esp-group ESP-GROUP proposal 1 hash sha256
 set vpn ipsec ike-group IKE-GROUP key-exchange ikev2
 set vpn ipsec ike-group IKE-GROUP lifetime 28800
+set vpn ipsec ike-group IKE-GROUP mobike disable
 set vpn ipsec ike-group IKE-GROUP proposal 1 dh-group 14
 set vpn ipsec ike-group IKE-GROUP proposal 1 encryption aes256
 set vpn ipsec ike-group IKE-GROUP proposal 1 hash sha256
@@ -199,15 +204,44 @@ set protocols bgp {asn} neighbor {peer_vti_ip} update-source {my_vti_ip}
         )
 
     # BGP network and router-id
+    # On branch routers we also `redistribute static` so the test-subnet
+    # static route installed above is reliably advertised into BGP regardless
+    # of whether VyOS's `network` statement picks up the non-connected RIB
+    # entry on this VyOS version.
+    redistribute_static = ""
+    if router_name in BRANCH_VPC_CIDR:
+        redistribute_static = (
+            "set protocols bgp {asn} address-family ipv4-unicast "
+            "redistribute static route-map SAFE-REDISTRIBUTE\n".format(asn=asn)
+        )
+
+    # Scope redistribute-connected to RFC1918-only prefixes so a default
+    # route or any non-private connected prefix (for example a VTI /30, the
+    # Cloud WAN inside CIDR 10.100.0.0/16, or a stray DHCP route) never
+    # propagates into BGP. Without this, `redistribute connected` will inject
+    # 0.0.0.0/0 or 169.254.0.0/16 into Cloud WAN and pollute the fabric.
     script += """
 set protocols bgp {asn} network {loopback}/32
-{dummy_bgp_networks}set protocols bgp {asn} parameters router-id {loopback}
-set protocols bgp {asn} address-family ipv4-unicast redistribute connected
+{branch_bgp_networks}set protocols bgp {asn} parameters router-id {loopback}
+set policy prefix-list SAFE-REDISTRIBUTE rule 10 action permit
+set policy prefix-list SAFE-REDISTRIBUTE rule 10 prefix 10.0.0.0/8
+set policy prefix-list SAFE-REDISTRIBUTE rule 10 le 32
+set policy prefix-list SAFE-REDISTRIBUTE rule 20 action permit
+set policy prefix-list SAFE-REDISTRIBUTE rule 20 prefix 172.16.0.0/12
+set policy prefix-list SAFE-REDISTRIBUTE rule 20 le 32
+set policy prefix-list SAFE-REDISTRIBUTE rule 30 action permit
+set policy prefix-list SAFE-REDISTRIBUTE rule 30 prefix 192.168.0.0/16
+set policy prefix-list SAFE-REDISTRIBUTE rule 30 le 32
+set policy route-map SAFE-REDISTRIBUTE rule 10 action permit
+set policy route-map SAFE-REDISTRIBUTE rule 10 match ip address prefix-list SAFE-REDISTRIBUTE
+set protocols bgp {asn} address-family ipv4-unicast redistribute connected route-map SAFE-REDISTRIBUTE
+{redistribute_static}
 
 commit
 save
 exit
-""".format(asn=asn, loopback=loopback, dummy_bgp_networks=dummy_bgp_networks)
+""".format(asn=asn, loopback=loopback, branch_bgp_networks=branch_bgp_networks,
+           redistribute_static=redistribute_static)
 
     return script
 
@@ -233,6 +267,17 @@ VPNEOF
 lxc file push /tmp/vyos-vpn.sh router/tmp/vyos-vpn.sh
 lxc exec router -- chmod +x /tmp/vyos-vpn.sh
 lxc exec router -- /tmp/vyos-vpn.sh
+
+# Force strongSwan to reload and re-initiate the peers. VyOS 'commit' does not
+# always reliably trigger a full strongSwan daemon reload after IPsec changes,
+# leaving the running daemon holding a stale in-memory config. Without this,
+# the config DB (show configuration commands | grep ipsec) looks correct but
+# `ipsec statusall` shows zero Security Associations with no initiate activity,
+# and `show vpn ike sa` reports state=down. An explicit restart + brief sleep
+# forces the daemon to load the latest swanctl/strongswan.conf and, because
+# our peers use connection-type=initiate, start the IKE exchange immediately.
+lxc exec router -- sudo ipsec restart || true
+sleep 5
 """.format(vpn_script=vpn_script)
 
 

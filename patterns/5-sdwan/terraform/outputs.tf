@@ -7,11 +7,6 @@ output "nv_branch1_instance_id" {
   value       = aws_instance.nv_branch1_sdwan_instance.id
 }
 
-output "nv_branch2_instance_id" {
-  description = "Virginia Branch2 - EC2 Instance ID"
-  value       = aws_instance.nv_branch2_sdwan_instance.id
-}
-
 output "nv_sdwan_instance_id" {
   description = "Virginia SD-WAN - EC2 Instance ID"
   value       = aws_instance.nv_sdwan_sdwan_instance.id
@@ -34,11 +29,6 @@ output "fra_sdwan_instance_id" {
 output "nv_branch1_outside_private_ip" {
   description = "Virginia Branch1 - Outside ENI Private IP"
   value       = aws_network_interface.nv_branch1_sdwan_outside.private_ip
-}
-
-output "nv_branch2_outside_private_ip" {
-  description = "Virginia Branch2 - Outside ENI Private IP"
-  value       = aws_network_interface.nv_branch2_sdwan_outside.private_ip
 }
 
 output "nv_sdwan_outside_private_ip" {
@@ -71,11 +61,6 @@ output "nv_branch1_outside_eip" {
   value       = aws_eip.nv_branch1_sdwan_outside_eip.public_ip
 }
 
-output "nv_branch2_outside_eip" {
-  description = "Virginia Branch2 - Outside EIP (VPN endpoint)"
-  value       = aws_eip.nv_branch2_sdwan_outside_eip.public_ip
-}
-
 output "nv_sdwan_outside_eip" {
   description = "Virginia SD-WAN - Outside EIP (VPN endpoint)"
   value       = aws_eip.nv_sdwan_sdwan_outside_eip.public_ip
@@ -100,11 +85,6 @@ output "nv_branch1_mgmt_eip" {
   value       = aws_eip.nv_branch1_sdwan_mgmt_eip.public_ip
 }
 
-output "nv_branch2_mgmt_eip" {
-  description = "Virginia Branch2 - Management EIP"
-  value       = aws_eip.nv_branch2_sdwan_mgmt_eip.public_ip
-}
-
 output "nv_sdwan_mgmt_eip" {
   description = "Virginia SD-WAN - Management EIP"
   value       = aws_eip.nv_sdwan_sdwan_mgmt_eip.public_ip
@@ -126,7 +106,6 @@ output "vpn_bgp_asns" {
     nv_sdwan    = var.nv_sdwan_bgp_asn
     fra_sdwan   = var.fra_sdwan_bgp_asn
     nv_branch1  = var.nv_branch1_bgp_asn
-    nv_branch2  = var.nv_branch2_bgp_asn
     fra_branch1 = var.fra_branch1_bgp_asn
   }
 }
