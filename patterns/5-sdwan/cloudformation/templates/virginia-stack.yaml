@@ -28,6 +28,10 @@ Parameters:
   UbuntuAmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id
+  NvBranch1TestSubnetCidr:
+    Type: String
+    Default: 10.20.3.0/24
+    Description: CIDR for the nv-branch1 test subnet (must fit within 10.20.0.0/20)
 
 Resources:
   # ===========================================================================
@@ -165,152 +169,39 @@ Resources:
       DestinationCidrBlock: 0.0.0.0/0
       NatGatewayId: !Ref NvBranch1NatGw
 
+  # Overlay routes on NvBranch1PrivateRt — each points to the VyOS internal ENI
+  # (NvBranch1InternalEni) so traffic for remote overlay destinations is
+  # handed to the branch router for IPsec/BGP forwarding. The existing NAT
+  # default route above (0.0.0.0/0 → NvBranch1NatGw) is preserved unchanged.
+  NvBranch1OverlayRouteFraBranch:
+    Type: AWS::EC2::Route
+    DependsOn: NvBranch1InternalAttach
+    Properties:
+      RouteTableId: !Ref NvBranch1PrivateRt
+      DestinationCidrBlock: 10.10.0.0/20              # fra-branch1 VPC
+      NetworkInterfaceId: !Ref NvBranch1InternalEni
+
+  NvBranch1OverlayRouteCloudWan:
+    Type: AWS::EC2::Route
+    DependsOn: NvBranch1InternalAttach
+    Properties:
+      RouteTableId: !Ref NvBranch1PrivateRt
+      DestinationCidrBlock: 10.100.0.0/16             # Cloud WAN Connect Peer CIDRs
+      NetworkInterfaceId: !Ref NvBranch1InternalEni
+
+  NvBranch1OverlayRouteProd:
+    Type: AWS::EC2::Route
+    DependsOn: NvBranch1InternalAttach
+    Properties:
+      RouteTableId: !Ref NvBranch1PrivateRt
+      DestinationCidrBlock: 10.50.0.0/16              # nv-prod-vpc
+      NetworkInterfaceId: !Ref NvBranch1InternalEni
+
   NvBranch1PrivateSubnetRtAssoc:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       SubnetId: !Ref NvBranch1PrivateSubnet
       RouteTableId: !Ref NvBranch1PrivateRt
-
-  # ===========================================================================
-  # nv-branch2-vpc (10.30.0.0/20)
-  # ===========================================================================
-  NvBranch2Vpc:
-    Type: AWS::EC2::VPC
-    Properties:
-      CidrBlock: 10.30.0.0/20
-      EnableDnsHostnames: true
-      EnableDnsSupport: true
-      Tags:
-        - Key: Name
-          Value: nv-branch2-vpc
-        - Key: Project
-          Value: !Ref ProjectName
-        - Key: Environment
-          Value: !Ref Environment
-        - Key: ManagedBy
-          Value: cloudformation
-
-  NvBranch2Igw:
-    Type: AWS::EC2::InternetGateway
-    Properties:
-      Tags:
-        - Key: Name
-          Value: nv-branch2-vpc-igw
-        - Key: Project
-          Value: !Ref ProjectName
-        - Key: Environment
-          Value: !Ref Environment
-        - Key: ManagedBy
-          Value: cloudformation
-
-  NvBranch2IgwAttachment:
-    Type: AWS::EC2::VPCGatewayAttachment
-    Properties:
-      VpcId: !Ref NvBranch2Vpc
-      InternetGatewayId: !Ref NvBranch2Igw
-
-  NvBranch2PublicSubnet1:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref NvBranch2Vpc
-      CidrBlock: 10.30.0.0/24
-      AvailabilityZone: us-east-1a
-      Tags:
-        - Key: Name
-          Value: nv-branch2-vpc-public-1a
-        - Key: Type
-          Value: public
-
-  NvBranch2PublicSubnet2:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref NvBranch2Vpc
-      CidrBlock: 10.30.2.0/24
-      AvailabilityZone: us-east-1a
-      Tags:
-        - Key: Name
-          Value: nv-branch2-vpc-public-2-1a
-        - Key: Type
-          Value: public
-
-  NvBranch2PrivateSubnet:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref NvBranch2Vpc
-      CidrBlock: 10.30.1.0/24
-      AvailabilityZone: us-east-1a
-      Tags:
-        - Key: Name
-          Value: nv-branch2-vpc-private-1a
-        - Key: Type
-          Value: private
-
-  NvBranch2NatEip:
-    Type: AWS::EC2::EIP
-    Properties:
-      Domain: vpc
-      Tags:
-        - Key: Name
-          Value: nv-branch2-vpc-nat-eip
-
-  NvBranch2NatGw:
-    Type: AWS::EC2::NatGateway
-    DependsOn: NvBranch2IgwAttachment
-    Properties:
-      AllocationId: !GetAtt NvBranch2NatEip.AllocationId
-      SubnetId: !Ref NvBranch2PublicSubnet1
-      Tags:
-        - Key: Name
-          Value: nv-branch2-vpc-nat-gw
-
-  NvBranch2PublicRt:
-    Type: AWS::EC2::RouteTable
-    Properties:
-      VpcId: !Ref NvBranch2Vpc
-      Tags:
-        - Key: Name
-          Value: nv-branch2-vpc-public-rt
-
-  NvBranch2PublicRoute:
-    Type: AWS::EC2::Route
-    DependsOn: NvBranch2IgwAttachment
-    Properties:
-      RouteTableId: !Ref NvBranch2PublicRt
-      DestinationCidrBlock: 0.0.0.0/0
-      GatewayId: !Ref NvBranch2Igw
-
-  NvBranch2PublicSubnet1RtAssoc:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref NvBranch2PublicSubnet1
-      RouteTableId: !Ref NvBranch2PublicRt
-
-  NvBranch2PublicSubnet2RtAssoc:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref NvBranch2PublicSubnet2
-      RouteTableId: !Ref NvBranch2PublicRt
-
-  NvBranch2PrivateRt:
-    Type: AWS::EC2::RouteTable
-    Properties:
-      VpcId: !Ref NvBranch2Vpc
-      Tags:
-        - Key: Name
-          Value: nv-branch2-vpc-private-rt
-
-  NvBranch2PrivateRoute:
-    Type: AWS::EC2::Route
-    Properties:
-      RouteTableId: !Ref NvBranch2PrivateRt
-      DestinationCidrBlock: 0.0.0.0/0
-      NatGatewayId: !Ref NvBranch2NatGw
-
-  NvBranch2PrivateSubnetRtAssoc:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref NvBranch2PrivateSubnet
-      RouteTableId: !Ref NvBranch2PrivateRt
 
   # ===========================================================================
   # nv-sdwan-vpc (10.201.0.0/16)
@@ -454,6 +345,305 @@ Resources:
       RouteTableId: !Ref NvSdwanPrivateRt
 
   # ===========================================================================
+  # nv-prod-vpc (10.50.0.0/16) - direct Cloud WAN attachment via Prod segment
+  # ===========================================================================
+  NvProdVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.50.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: nv-prod-vpc
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  NvProdIgw:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: nv-prod-vpc-igw
+
+  NvProdIgwAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref NvProdVpc
+      InternetGatewayId: !Ref NvProdIgw
+
+  NvProdPublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref NvProdVpc
+      CidrBlock: 10.50.0.0/24
+      AvailabilityZone: us-east-1a
+      Tags:
+        - Key: Name
+          Value: nv-prod-vpc-public-1a
+        - Key: Type
+          Value: public
+
+  NvProdPrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref NvProdVpc
+      CidrBlock: 10.50.1.0/24
+      AvailabilityZone: us-east-1a
+      Tags:
+        - Key: Name
+          Value: nv-prod-vpc-private-1a
+        - Key: Type
+          Value: private
+
+  NvProdNatEip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: nv-prod-vpc-nat-eip
+
+  NvProdNatGw:
+    Type: AWS::EC2::NatGateway
+    DependsOn: NvProdIgwAttachment
+    Properties:
+      AllocationId: !GetAtt NvProdNatEip.AllocationId
+      SubnetId: !Ref NvProdPublicSubnet
+      Tags:
+        - Key: Name
+          Value: nv-prod-vpc-nat-gw
+
+  NvProdPublicRt:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref NvProdVpc
+      Tags:
+        - Key: Name
+          Value: nv-prod-vpc-public-rt
+
+  NvProdPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: NvProdIgwAttachment
+    Properties:
+      RouteTableId: !Ref NvProdPublicRt
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref NvProdIgw
+
+  NvProdPublicSubnetRtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref NvProdPublicSubnet
+      RouteTableId: !Ref NvProdPublicRt
+
+  NvProdPrivateRt:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref NvProdVpc
+      Tags:
+        - Key: Name
+          Value: nv-prod-vpc-private-rt
+
+  # Default 0.0.0.0/0 via NAT - stays in virginia-stack.yaml
+  NvProdPrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref NvProdPrivateRt
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NvProdNatGw
+
+  NvProdPrivateSubnetRtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref NvProdPrivateSubnet
+      RouteTableId: !Ref NvProdPrivateRt
+
+  # -----------------------------------------------------------------------
+  # Security group for Prod EC2 - no 0.0.0.0/0 ingress (AC 9.3 / AC 14.6)
+  # -----------------------------------------------------------------------
+  NvProdEc2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Prod EC2 security group - ICMP/SSH from RFC1918, HTTPS from VPC
+      VpcId: !Ref NvProdVpc
+      SecurityGroupIngress:
+        - IpProtocol: icmp
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 10.0.0.0/8
+          Description: ICMP from RFC1918 (reachability probes)
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 10.0.0.0/8
+          Description: SSH from RFC1918 (overlay diagnostics)
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.50.0.0/16
+          Description: HTTPS from VPC CIDR (SSM)
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+          Description: All outbound
+      Tags:
+        - Key: Name
+          Value: nv-prod-vpc-ec2-sg
+
+  # -----------------------------------------------------------------------
+  # Dedicated SSM-only IAM role (AC 9.4: ONLY AmazonSSMManagedInstanceCore;
+  # do not reuse SdwanInstanceRole which also carries S3 VyOS-bucket policies)
+  # -----------------------------------------------------------------------
+  NvProdEc2IamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-nv-prod-ec2-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  NvProdEc2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub '${ProjectName}-nv-prod-ec2-profile'
+      Roles:
+        - !Ref NvProdEc2IamRole
+
+  NvProdEc2Instance:
+    Type: AWS::EC2::Instance
+    DependsOn: NvProdPrivateRoute
+    Properties:
+      ImageId: !Ref UbuntuAmiId
+      InstanceType: t3.micro
+      IamInstanceProfile: !Ref NvProdEc2InstanceProfile
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref NvProdPrivateSubnet
+          GroupSet:
+            - !Ref NvProdEc2SecurityGroup
+          AssociatePublicIpAddress: false
+      Tags:
+        - Key: Name
+          Value: nv-prod-vpc-ec2
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  # ===========================================================================
+  # Branch Test EC2 - shared SSM-only IAM profile + nv-branch1 test subnet/EC2
+  # Option A (design §5.1): one IAM role + instance profile declared here,
+  # exported to Frankfurt via BranchTestEc2InstanceProfileName output.
+  # ===========================================================================
+  BranchTestEc2IamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-branch-test-ec2-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  BranchTestEc2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub '${ProjectName}-branch-test-ec2-profile'
+      Roles:
+        - !Ref BranchTestEc2IamRole
+
+  # ----- nv-branch1 test subnet in same AZ as existing private subnet -----
+  NvBranch1TestSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref NvBranch1Vpc
+      CidrBlock: !Ref NvBranch1TestSubnetCidr
+      AvailabilityZone: us-east-1a
+      Tags:
+        - Key: Name
+          Value: nv-branch1-vpc-test-1a
+        - Key: Type
+          Value: private
+
+  # Attach to existing NvBranch1PrivateRt so overlay + NAT default routes apply
+  NvBranch1TestSubnetRtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref NvBranch1TestSubnet
+      RouteTableId: !Ref NvBranch1PrivateRt
+
+  NvBranch1TestEc2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Branch test EC2 - ICMP/SSH from RFC1918, HTTPS from VPC
+      VpcId: !Ref NvBranch1Vpc
+      SecurityGroupIngress:
+        - IpProtocol: icmp
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 10.0.0.0/8
+          Description: ICMP from RFC1918 (reachability probes)
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 10.0.0.0/8
+          Description: SSH from RFC1918 (overlay diagnostics)
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.20.0.0/20
+          Description: HTTPS from Branch_VPC CIDR (SSM)
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+          Description: All outbound
+      Tags:
+        - Key: Name
+          Value: nv-branch1-vpc-test-ec2-sg
+
+  NvBranch1TestEc2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref UbuntuAmiId
+      InstanceType: t3.micro
+      IamInstanceProfile: !Ref BranchTestEc2InstanceProfile
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref NvBranch1TestSubnet
+          GroupSet:
+            - !Ref NvBranch1TestEc2SecurityGroup
+          AssociatePublicIpAddress: false
+      Tags:
+        - Key: Name
+          Value: nv-branch1-vpc-test-ec2
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  # ===========================================================================
   # Security Groups - nv-branch1-vpc
   # ===========================================================================
   NvBranch1PublicSg:
@@ -517,66 +707,6 @@ Resources:
       Tags:
         - Key: Name
           Value: nv-branch1-vpc-sdwan-private-sg
-
-  # ===========================================================================
-  # Security Groups - nv-branch2-vpc
-  # ===========================================================================
-  NvBranch2PublicSg:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Public security group for SD-WAN instance - IKE, NAT-T, SSM
-      VpcId: !Ref NvBranch2Vpc
-      SecurityGroupIngress:
-        - IpProtocol: udp
-          FromPort: 500
-          ToPort: 500
-          CidrIp: 0.0.0.0/0
-          Description: IKE
-        - IpProtocol: udp
-          FromPort: 4500
-          ToPort: 4500
-          CidrIp: 0.0.0.0/0
-          Description: NAT-T
-        - IpProtocol: tcp
-          FromPort: 443
-          ToPort: 443
-          CidrIp: 10.30.0.0/20
-          Description: SSM HTTPS from VPC CIDR
-      SecurityGroupEgress:
-        - IpProtocol: '-1'
-          FromPort: -1
-          ToPort: -1
-          CidrIp: 0.0.0.0/0
-          Description: All outbound
-      Tags:
-        - Key: Name
-          Value: nv-branch2-vpc-sdwan-public-sg
-
-  NvBranch2PrivateSg:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Private security group for SD-WAN instance - internal traffic
-      VpcId: !Ref NvBranch2Vpc
-      SecurityGroupIngress:
-        - IpProtocol: '-1'
-          FromPort: -1
-          ToPort: -1
-          CidrIp: 10.30.0.0/20
-          Description: All from VPC CIDR
-        - IpProtocol: '-1'
-          FromPort: -1
-          ToPort: -1
-          CidrIp: 10.0.0.0/8
-          Description: All from RFC1918
-      SecurityGroupEgress:
-        - IpProtocol: '-1'
-          FromPort: -1
-          ToPort: -1
-          CidrIp: 0.0.0.0/0
-          Description: All outbound
-      Tags:
-        - Key: Name
-          Value: nv-branch2-vpc-sdwan-private-sg
 
   # ===========================================================================
   # Security Groups - nv-sdwan-vpc
@@ -796,107 +926,6 @@ Resources:
       NetworkInterfaceId: !Ref NvBranch1OutsideEni
 
   # ===========================================================================
-  # EC2 Instance, ENIs, and EIPs - nv-branch2
-  # ===========================================================================
-  NvBranch2MgmtEni:
-    Type: AWS::EC2::NetworkInterface
-    Properties:
-      SubnetId: !Ref NvBranch2PublicSubnet1
-      GroupSet:
-        - !Ref NvBranch2PublicSg
-      SourceDestCheck: false
-      Tags:
-        - Key: Name
-          Value: nv-branch2-vpc-sdwan-mgmt
-
-  NvBranch2Instance:
-    Type: AWS::EC2::Instance
-    DependsOn: NvBranch2IgwAttachment
-    Properties:
-      ImageId: !Ref UbuntuAmiId
-      InstanceType: !Ref SdwanInstanceType
-      NetworkInterfaces:
-        - NetworkInterfaceId: !Ref NvBranch2MgmtEni
-          DeviceIndex: 0
-      IamInstanceProfile: !Ref SdwanInstanceProfile
-      Tags:
-        - Key: Name
-          Value: nv-branch2-vpc-sdwan-instance
-        - Key: Project
-          Value: !Ref ProjectName
-        - Key: Environment
-          Value: !Ref Environment
-        - Key: ManagedBy
-          Value: cloudformation
-
-  NvBranch2OutsideEni:
-    Type: AWS::EC2::NetworkInterface
-    Properties:
-      SubnetId: !Ref NvBranch2PublicSubnet2
-      GroupSet:
-        - !Ref NvBranch2PublicSg
-      SourceDestCheck: false
-      Tags:
-        - Key: Name
-          Value: nv-branch2-vpc-sdwan-outside
-
-  NvBranch2InternalEni:
-    Type: AWS::EC2::NetworkInterface
-    Properties:
-      SubnetId: !Ref NvBranch2PrivateSubnet
-      GroupSet:
-        - !Ref NvBranch2PrivateSg
-      SourceDestCheck: false
-      Tags:
-        - Key: Name
-          Value: nv-branch2-vpc-sdwan-internal
-
-  NvBranch2OutsideAttach:
-    Type: AWS::EC2::NetworkInterfaceAttachment
-    Properties:
-      InstanceId: !Ref NvBranch2Instance
-      NetworkInterfaceId: !Ref NvBranch2OutsideEni
-      DeviceIndex: 1
-
-  NvBranch2InternalAttach:
-    Type: AWS::EC2::NetworkInterfaceAttachment
-    Properties:
-      InstanceId: !Ref NvBranch2Instance
-      NetworkInterfaceId: !Ref NvBranch2InternalEni
-      DeviceIndex: 2
-
-  NvBranch2MgmtEip:
-    Type: AWS::EC2::EIP
-    DependsOn: NvBranch2IgwAttachment
-    Properties:
-      Domain: vpc
-      Tags:
-        - Key: Name
-          Value: nv-branch2-vpc-sdwan-mgmt-eip
-
-  NvBranch2MgmtEipAssoc:
-    Type: AWS::EC2::EIPAssociation
-    DependsOn: NvBranch2Instance
-    Properties:
-      AllocationId: !GetAtt NvBranch2MgmtEip.AllocationId
-      NetworkInterfaceId: !Ref NvBranch2MgmtEni
-
-  NvBranch2OutsideEip:
-    Type: AWS::EC2::EIP
-    DependsOn: NvBranch2IgwAttachment
-    Properties:
-      Domain: vpc
-      Tags:
-        - Key: Name
-          Value: nv-branch2-vpc-sdwan-outside-eip
-
-  NvBranch2OutsideEipAssoc:
-    Type: AWS::EC2::EIPAssociation
-    Properties:
-      AllocationId: !GetAtt NvBranch2OutsideEip.AllocationId
-      NetworkInterfaceId: !Ref NvBranch2OutsideEni
-
-  # ===========================================================================
   # EC2 Instance, ENIs, and EIPs - nv-sdwan
   # ===========================================================================
   NvSdwanMgmtEni:
@@ -1001,8 +1030,6 @@ Outputs:
   # VPC IDs
   NvBranch1VpcId:
     Value: !Ref NvBranch1Vpc
-  NvBranch2VpcId:
-    Value: !Ref NvBranch2Vpc
   NvSdwanVpcId:
     Value: !Ref NvSdwanVpc
 
@@ -1023,8 +1050,6 @@ Outputs:
   # Instance IDs
   NvBranch1InstanceId:
     Value: !Ref NvBranch1Instance
-  NvBranch2InstanceId:
-    Value: !Ref NvBranch2Instance
   NvSdwanInstanceId:
     Value: !Ref NvSdwanInstance
 
@@ -1033,12 +1058,6 @@ Outputs:
     Value: !Ref NvBranch1MgmtEip
   NvBranch1OutsideEip:
     Value: !Ref NvBranch1OutsideEip
-
-  # EIPs - nv-branch2
-  NvBranch2MgmtEip:
-    Value: !Ref NvBranch2MgmtEip
-  NvBranch2OutsideEip:
-    Value: !Ref NvBranch2OutsideEip
 
   # EIPs - nv-sdwan
   NvSdwanMgmtEip:
@@ -1055,3 +1074,33 @@ Outputs:
   # IAM Instance Profile name (shared with Frankfurt stack)
   InstanceProfileName:
     Value: !Ref SdwanInstanceProfile
+
+  # nv-prod-vpc VPC ARN, subnet, route table for CloudWAN stack
+  NvProdVpcId:
+    Value: !Ref NvProdVpc
+  NvProdVpcArn:
+    Value: !Sub 'arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:vpc/${NvProdVpc}'
+  NvProdPrivateSubnetId:
+    Value: !Ref NvProdPrivateSubnet
+  NvProdPrivateSubnetArn:
+    Value: !Sub 'arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:subnet/${NvProdPrivateSubnet}'
+  NvProdPrivateRouteTableId:
+    Value: !Ref NvProdPrivateRt
+
+  # nv-prod-vpc EC2 outputs
+  NvProdEc2InstanceId:
+    Value: !Ref NvProdEc2Instance
+  NvProdEc2PrivateIp:
+    Value: !GetAtt NvProdEc2Instance.PrivateIp
+  NvProdEc2SsmCommand:
+    Value: !Sub 'aws ssm start-session --target ${NvProdEc2Instance} --region ${AWS::Region}'
+
+  # Branch test EC2 outputs (shared IAM profile + nv-branch1 test EC2)
+  BranchTestEc2InstanceProfileName:
+    Value: !Ref BranchTestEc2InstanceProfile
+  NvBranch1TestEc2InstanceId:
+    Value: !Ref NvBranch1TestEc2Instance
+  NvBranch1TestEc2PrivateIp:
+    Value: !GetAtt NvBranch1TestEc2Instance.PrivateIp
+  NvBranch1TestEc2SsmCommand:
+    Value: !Sub 'aws ssm start-session --target ${NvBranch1TestEc2Instance} --region ${AWS::Region}'

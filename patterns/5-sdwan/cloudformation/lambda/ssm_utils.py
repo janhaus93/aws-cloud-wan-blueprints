@@ -114,6 +114,8 @@ def get_instance_configs(param_prefix="/sdwan/", regions=None):
                     "cloudwan-peer-ip1": "cloudwan_peer_ip1",
                     "cloudwan-peer-ip2": "cloudwan_peer_ip2",
                     "cloudwan-asn": "cloudwan_asn",
+                    "test-subnet": "test_subnet",
+                    "inside-gateway-ip": "inside_gateway_ip",
                 }
                 if param_type in key_map:
                     configs[instance_name][key_map[param_type]] = value

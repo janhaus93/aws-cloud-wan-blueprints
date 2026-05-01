@@ -23,6 +23,13 @@ Parameters:
   SdwanBgpAsn:
     Type: Number
     Default: 65001
+    Description: Deprecated — retained only for backward compatibility. Per-hub ASNs are NvSdwanBgpAsn and FraSdwanBgpAsn.
+  NvSdwanBgpAsn:
+    Type: Number
+    Default: 64501
+  FraSdwanBgpAsn:
+    Type: Number
+    Default: 64502
   NvSdwanVpcArn:
     Type: String
   NvSdwanPrivateSubnetArn:
@@ -38,6 +45,12 @@ Parameters:
   FraSdwanPrivateRouteTableId:
     Type: String
   FraSdwanInternalEniPrivateIp:
+    Type: String
+  NvProdVpcArn:
+    Type: String
+  NvProdPrivateSubnetArn:
+    Type: String
+  NvProdPrivateRouteTableId:
     Type: String
 
 Resources:
@@ -84,13 +97,10 @@ Resources:
                 - 10.100.1.0/24
         segments:
           - name: !Ref CloudWanSegmentName
-            description: SDWAN segment for edge VPCs
+            description: Hybrid segment for SD-WAN hub VPCs
             require-attachment-acceptance: false
           - name: Prod
-            description: Production segment for branch VPCs
-            require-attachment-acceptance: false
-          - name: Dev
-            description: Development segment for test VPCs
+            description: Production segment for direct-attached VPCs
             require-attachment-acceptance: false
         segment-actions:
           - action: share
@@ -98,15 +108,11 @@ Resources:
             segment: !Ref CloudWanSegmentName
             share-with:
               - Prod
-            routing-policy-names:
-              - filterProdRoutes
           - action: share
             mode: attachment-route
-            segment: !Ref CloudWanSegmentName
+            segment: Prod
             share-with:
-              - Dev
-            routing-policy-names:
-              - filterDevRoutes
+              - !Ref CloudWanSegmentName
         attachment-policies:
           - rule-number: 100
             condition-logic: or
@@ -128,77 +134,7 @@ Resources:
             action:
               association-method: constant
               segment: Prod
-          - rule-number: 300
-            condition-logic: or
-            conditions:
-              - type: tag-value
-                operator: equals
-                key: segment
-                value: Dev
-            action:
-              association-method: constant
-              segment: Dev
-        routing-policies:
-          - routing-policy-name: filterProdRoutes
-            routing-policy-direction: outbound
-            routing-policy-number: 100
-            routing-policy-rules:
-              - rule-number: 100
-                rule-definition:
-                  match-conditions:
-                    - type: community-in-list
-                      value: '64501:100'
-                    - type: community-in-list
-                      value: '64502:100'
-                  condition-logic: or
-                  action:
-                    type: allow
-              - rule-number: 200
-                rule-definition:
-                  match-conditions:
-                    - type: prefix-in-cidr
-                      value: '0.0.0.0/0'
-                  condition-logic: or
-                  action:
-                    type: drop
-              - rule-number: 300
-                rule-definition:
-                  match-conditions:
-                    - type: prefix-equals
-                      value: '0.0.0.0/0'
-                  condition-logic: or
-                  action:
-                    type: drop
-          - routing-policy-name: filterDevRoutes
-            routing-policy-direction: outbound
-            routing-policy-number: 200
-            routing-policy-rules:
-              - rule-number: 100
-                rule-definition:
-                  match-conditions:
-                    - type: community-in-list
-                      value: '64501:200'
-                    - type: community-in-list
-                      value: '64502:200'
-                  condition-logic: or
-                  action:
-                    type: allow
-              - rule-number: 200
-                rule-definition:
-                  match-conditions:
-                    - type: prefix-in-cidr
-                      value: '0.0.0.0/0'
-                  condition-logic: or
-                  action:
-                    type: drop
-              - rule-number: 300
-                rule-definition:
-                  match-conditions:
-                    - type: prefix-equals
-                      value: '0.0.0.0/0'
-                  condition-logic: or
-                  action:
-                    type: drop
+        # routing-policies: intentionally absent (AC 7.5 / AC 14.4)
       Tags:
         - Key: Name
           Value: !Sub '${ProjectName}-core-network'
@@ -251,6 +187,43 @@ Resources:
           Value: !Ref Environment
         - Key: ManagedBy
           Value: cloudformation
+
+  NvProdVpcAttachment:
+    Type: AWS::NetworkManager::VpcAttachment
+    DependsOn: CoreNetwork
+    Properties:
+      CoreNetworkId: !GetAtt CoreNetwork.CoreNetworkId
+      VpcArn: !Ref NvProdVpcArn
+      SubnetArns:
+        - !Ref NvProdPrivateSubnetArn
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-nv-prod-vpc-attachment'
+        - Key: segment
+          Value: Prod
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  # Routes for Branch_VPC CIDRs on nv-prod private RT, targeting Cloud WAN
+  NvProdBranchNvRoute:
+    Type: AWS::EC2::Route
+    DependsOn: NvProdVpcAttachment
+    Properties:
+      RouteTableId: !Ref NvProdPrivateRouteTableId
+      DestinationCidrBlock: 10.20.0.0/20
+      CoreNetworkArn: !GetAtt CoreNetwork.CoreNetworkArn
+
+  NvProdBranchFraRoute:
+    Type: AWS::EC2::Route
+    DependsOn: NvProdVpcAttachment
+    Properties:
+      RouteTableId: !Ref NvProdPrivateRouteTableId
+      DestinationCidrBlock: 10.10.0.0/20
+      CoreNetworkArn: !GetAtt CoreNetwork.CoreNetworkArn
 
   # ===========================================================================
   # Connect Attachments (NO_ENCAP / tunnel-less)
@@ -305,7 +278,7 @@ Resources:
       PeerAddress: !Ref NvSdwanInternalEniPrivateIp
       SubnetArn: !Ref NvSdwanPrivateSubnetArn
       BgpOptions:
-        PeerAsn: !Ref SdwanBgpAsn
+        PeerAsn: !Ref NvSdwanBgpAsn
       Tags:
         - Key: Name
           Value: !Sub '${ProjectName}-nv-sdwan-connect-peer'
@@ -323,7 +296,7 @@ Resources:
       PeerAddress: !Ref FraSdwanInternalEniPrivateIp
       SubnetArn: !Ref FraSdwanPrivateSubnetArn
       BgpOptions:
-        PeerAsn: !Ref SdwanBgpAsn
+        PeerAsn: !Ref FraSdwanBgpAsn
       Tags:
         - Key: Name
           Value: !Sub '${ProjectName}-fra-sdwan-connect-peer'
