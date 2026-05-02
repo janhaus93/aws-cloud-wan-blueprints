@@ -50,9 +50,10 @@ nv-prod-vpc runs a single Amazon Linux EC2 reachable via SSM Session Manager onl
 
 - AWS CLI configured with credentials for 2 regions (`us-east-1` and `eu-central-1`)
 - An S3 bucket containing:
-  - The VyOS LXD image (default: `fra-vyos-bucket` in `us-east-1`)
   - The `lambda.zip` deployment package (upload from this repo)
   - All CloudFormation templates from the `templates/` directory
+
+The VyOS LXD image is pulled at Phase 1 runtime from the public ECR repository `public.ecr.aws/<alias>/vyos:1.3.3` using the `oras` CLI (anonymous HTTPS pull — no AWS credentials required). Consumers need take no action on the image: the `oras` CLI is downloaded and installed by Phase 1 itself on each SD-WAN Ubuntu host, and the default `VyosEcrPublicUri` / `VyosEcrImageTag` parameter values already point at the maintainer's canonical public repository.
 
 ## Quick Start
 
@@ -153,8 +154,8 @@ parent-stack.yaml
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `SdwanInstanceType` | `c5.large` | EC2 instance type for SD-WAN hosts |
-| `VyosS3Bucket` | `fra-vyos-bucket` | S3 bucket with VyOS LXD image |
-| `VyosS3Key` | `vyos_dxgl-1.3.3-...tar.gz` | VyOS image filename in S3 |
+| `VyosEcrPublicUri` | `public.ecr.aws/<alias>/vyos` | ECR Public URI of the VyOS LXD image OCI artifact (no tag suffix) |
+| `VyosEcrImageTag` | `1.3.3` | OCI artifact tag to pull (matches upstream VyOS release identifier) |
 | `NvSdwanBgpAsn` | `64501` | BGP ASN for the `nv-sdwan` Cloud WAN Connect Peer (must match the ASN VyOS advertises) |
 | `FraSdwanBgpAsn` | `64502` | BGP ASN for the `fra-sdwan` Cloud WAN Connect Peer (must match the ASN VyOS advertises) |
 | `SdwanBgpAsn` | `65001` | Deprecated — retained for backward compatibility only. Per-hub ASNs are `NvSdwanBgpAsn` / `FraSdwanBgpAsn`. |
@@ -246,6 +247,93 @@ After Step Functions reports `SUCCEEDED`, you can confirm reachability end-to-en
 | 5 | Prod EC2 | fra-branch1 test EC2 | reverse of probe 3 |
 
 For each probe, open an SSM session (`aws ssm start-session --target <InstanceId> --region <region>`) and run `ping -c 4 <target-private-ip>`. All five should succeed.
+
+## Publishing the VyOS Image to ECR Public (maintainers only)
+
+> **Consumers do NOT need to run this procedure.** The default `VyosEcrPublicUri` parameter already points at the maintainer's public ECR repository, which permits anonymous pulls from any AWS account and region. This section is only for repository maintainers publishing a new VyOS release.
+
+### 1. Create the ECR Public repository
+
+Create a repository named `vyos` under the maintainer's ECR Public registry alias. ECR Public repositories allow anonymous pulls by default — no extra policy or IAM configuration is required for the pull side.
+
+```bash
+aws ecr-public create-repository \
+  --repository-name vyos \
+  --region us-east-1
+```
+
+(ECR Public's API endpoint lives in `us-east-1` regardless of where the image is pulled from; the gallery itself serves global anonymous pulls.)
+
+### 2. Download the upstream VyOS tarball
+
+Fetch the current `vyos_dxgl-1.3.3-bc64a3a-5_lxd_amd64.tar.gz` tarball from its upstream location. Compute its SHA-256 digest and record the value as the canonical byte-identity reference used in step 6b.
+
+```bash
+sha256sum vyos_dxgl-1.3.3-bc64a3a-5_lxd_amd64.tar.gz
+# → record this digest — the pulled blob in step 6b must match it byte-for-byte
+```
+
+### 3. Install the `oras` CLI locally
+
+Install the [`oras`](https://oras.land/docs/) CLI, pinned to the same version that `lambda/phase1_handler.py` uses (see the `ORAS_VERSION` module-level constant). Pinning the maintainer CLI to the handler's pinned version keeps the publish and pull sides in lockstep.
+
+### 4. Push the tarball as a single-layer OCI artifact
+
+Push the tarball unmodified as the single blob of a single-manifest OCI artifact. The artifact media type identifies the payload as a VyOS LXD image tarball; annotations carry provenance metadata.
+
+```bash
+oras push public.ecr.aws/<alias>/vyos:1.3.3 \
+    --artifact-type application/vnd.vyos.lxd.image.tar.gz \
+    --annotation org.opencontainers.image.source=<repo-url> \
+    --annotation org.opencontainers.image.version=1.3.3 \
+    --annotation org.opencontainers.image.description="VyOS 1.3.3 LXD image" \
+    vyos_dxgl-1.3.3-bc64a3a-5_lxd_amd64.tar.gz:application/vnd.vyos.lxd.image.tar.gz
+```
+
+Notes on the command:
+
+- The trailing `<file>:<media-type>` syntax tells `oras` to push the file as a layer with that media type (rather than inferring one).
+- `oras` automatically sets the layer's `org.opencontainers.image.title` annotation to the filename `vyos_dxgl-1.3.3-bc64a3a-5_lxd_amd64.tar.gz`. This is what makes a subsequent `oras pull` write the blob to disk under the same filename — Phase 1 relies on this behaviour and then renames the file to `/tmp/vyos.tar.gz`.
+
+### 5. Apply the `latest` tag to the same manifest digest
+
+Apply a mutable `latest` tag that points at the exact manifest digest produced in step 4:
+
+```bash
+oras tag public.ecr.aws/<alias>/vyos:1.3.3 latest
+```
+
+Confirm both tags resolve to the same manifest digest:
+
+```bash
+oras manifest fetch --descriptor public.ecr.aws/<alias>/vyos:1.3.3
+oras manifest fetch --descriptor public.ecr.aws/<alias>/vyos:latest
+```
+
+The two descriptors printed must carry identical `digest` fields.
+
+### 6. Verify the published artifact
+
+#### 6a. HTTP 200 on the unauthenticated manifest endpoint
+
+```bash
+curl -fsSI "https://public.ecr.aws/v2/<alias>/vyos/manifests/1.3.3"
+curl -fsSI "https://public.ecr.aws/v2/<alias>/vyos/manifests/latest"
+```
+
+Both requests must return `200 OK`. Any 4xx / 5xx here means the repository is not anonymously pullable and Phase 1 will fail on Consumer deployments.
+
+#### 6b. Byte-identity verification via anonymous `oras pull`
+
+From a machine with no AWS credentials configured (or with `AWS_PROFILE` / `AWS_ACCESS_KEY_ID` deliberately unset), pull the artifact back down and recompute the digest:
+
+```bash
+mkdir -p /tmp/verify
+oras pull public.ecr.aws/<alias>/vyos:1.3.3 --output /tmp/verify/
+sha256sum /tmp/verify/vyos_dxgl-1.3.3-bc64a3a-5_lxd_amd64.tar.gz
+```
+
+The resulting SHA-256 digest MUST equal the digest recorded in step 2. Any mismatch indicates the bytes in ECR Public are not the same bytes as the upstream tarball, and the release must be re-published before Consumers use it.
 
 ## Cleanup
 

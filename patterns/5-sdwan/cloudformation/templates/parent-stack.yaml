@@ -17,15 +17,14 @@ Parameters:
   Environment:
     Type: String
     Default: workshop
-  VyosS3Bucket:
+  VyosEcrPublicUri:
     Type: String
-    Default: fra-vyos-bucket
-  VyosS3Region:
+    Default: public.ecr.aws/x9x1a6t3/vyos
+    Description: ECR Public URI of the VyOS LXD image OCI artifact (no tag suffix)
+  VyosEcrImageTag:
     Type: String
-    Default: us-east-1
-  VyosS3Key:
-    Type: String
-    Default: vyos_dxgl-1.3.3-bc64a3a-5_lxd_amd64.tar.gz
+    Default: "1.3.3"
+    Description: OCI artifact tag to pull (matches upstream VyOS release identifier)
   SdwanBgpAsn:
     Type: Number
     Default: 65001
@@ -90,9 +89,6 @@ Resources:
         SdwanInstanceType: !Ref SdwanInstanceType
         ProjectName: !Ref ProjectName
         Environment: !Ref Environment
-        VyosS3Bucket: !Ref VyosS3Bucket
-        VyosS3Region: !Ref VyosS3Region
-        VyosS3Key: !Ref VyosS3Key
         CloudWanConnectCidrNv: !Ref CloudWanConnectCidrNv
         NvBranch1TestSubnetCidr: !Ref NvBranch1TestSubnetCidr
       Tags:
@@ -275,6 +271,9 @@ Resources:
         FraSdwanConnectPeerBgpIp1: !GetAtt CloudWanStack.Outputs.FraSdwanConnectPeerBgpIp1
         FraSdwanConnectPeerBgpIp2: !GetAtt CloudWanStack.Outputs.FraSdwanConnectPeerBgpIp2
         FraSdwanConnectPeerAsn: !GetAtt CloudWanStack.Outputs.FraSdwanConnectPeerAsn
+        # VyOS image source (ECR Public)
+        VyosEcrPublicUri: !Ref VyosEcrPublicUri
+        VyosEcrImageTag: !Ref VyosEcrImageTag
       Tags:
         - Key: Project
           Value: !Ref ProjectName

@@ -76,6 +76,13 @@ Parameters:
     Type: String
   FraSdwanConnectPeerAsn:
     Type: String
+  # VyOS image source (ECR Public)
+  VyosEcrPublicUri:
+    Type: String
+    Description: ECR Public URI of the VyOS OCI artifact (no tag suffix)
+  VyosEcrImageTag:
+    Type: String
+    Description: Image tag to pull (e.g. 1.3.3)
 
 Resources:
   # ===========================================================================
@@ -168,6 +175,8 @@ Resources:
       Environment:
         Variables:
           SSM_PARAM_PREFIX: /sdwan/
+          VYOS_ECR_PUBLIC_URI: !Ref VyosEcrPublicUri
+          VYOS_ECR_IMAGE_TAG: !Ref VyosEcrImageTag
       Tags:
         - Key: Name
           Value: !Sub '${ProjectName}-sdwan-phase1'
