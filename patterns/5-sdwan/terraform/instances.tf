@@ -35,33 +35,6 @@ resource "aws_iam_role_policy_attachment" "sdwan_ssm_policy" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
-resource "aws_iam_role_policy" "sdwan_s3_policy" {
-  provider = aws.frankfurt
-  name     = "sdwan-s3-access"
-  role     = aws_iam_role.sdwan_instance_role.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect   = "Allow"
-        Action   = "s3:ListAllMyBuckets"
-        Resource = "*"
-      },
-      {
-        Effect   = "Allow"
-        Action   = "s3:ListBucket"
-        Resource = "arn:aws:s3:::${var.vyos_s3_bucket}"
-      },
-      {
-        Effect   = "Allow"
-        Action   = "s3:GetObject"
-        Resource = "arn:aws:s3:::${var.vyos_s3_bucket}/*"
-      }
-    ]
-  })
-}
-
 resource "aws_iam_instance_profile" "sdwan_instance_profile" {
   provider = aws.frankfurt
   name     = "sdwan-instance-profile"

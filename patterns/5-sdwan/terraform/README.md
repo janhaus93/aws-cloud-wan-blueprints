@@ -52,7 +52,7 @@ nv-prod-vpc attaches directly to Cloud WAN — no VyOS, no IPsec, no Connect pee
 
 - [Terraform](https://www.terraform.io/downloads) >= 1.0
 - AWS CLI configured with credentials for 2 regions (`us-east-1` and `eu-central-1`)
-- An S3 bucket containing the VyOS LXD image (default: `fra-vyos-bucket` in `us-east-1`)
+- Internet egress from the SD-WAN EC2 instances so they can pull the VyOS LXD image from [ECR Public](https://gallery.ecr.aws/x9x1a6t3/vyos) anonymously (no AWS auth required)
 
 ## Quick Start
 
@@ -77,7 +77,7 @@ The state machine runs 4 phases automatically:
 
 | Phase   | Lambda         | What It Does                                                                                                                                                                       | Wait After |
 |---------|----------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------|
-| Phase 1 | `sdwan-phase1` | Installs packages, initializes LXD, deploys VyOS container with base DHCP config                                                                                                   | 60s        |
+| Phase 1 | `sdwan-phase1` | Installs packages, initializes LXD, installs the pinned `oras` CLI, pulls the VyOS LXD image from ECR Public anonymously, and deploys the VyOS container with base DHCP config | 60s        |
 | Phase 2 | `sdwan-phase2` | Pushes IPsec tunnel (IKEv2, MOBIKE disabled) and plain eBGP peering; installs a static route + `redistribute static` so each branch advertises its `/28` test subnet into BGP; scopes `redistribute connected/static` via the `SAFE-REDISTRIBUTE` route-map so only RFC1918 prefixes enter BGP; restarts strongSwan after commit so the daemon picks up the new config | 90s        |
 | Phase 3 | `sdwan-phase3` | Configures tunnel-less eBGP neighbors on SDWAN routers toward their Cloud WAN Connect peers, with `next-hop-self` (so branch prefixes propagate with the SDWAN hub's Connect-peer IP as next-hop) and `soft-reconfiguration inbound` (for non-disruptive policy reloads) | 30s        |
 | Phase 4 | `sdwan-phase4` | Verifies IPsec SAs, BGP sessions (VPN + Cloud WAN), interface state, VTI ping; persists results to SSM                                                                             | —          |
@@ -120,12 +120,10 @@ The state machine runs 4 phases automatically:
 
 ### Key Variables
 
-| Variable                       | Default               | Description                                    |
-|--------------------------------|-----------------------|------------------------------------------------|
-| `sdwan_instance_type`          | `c5.large`            | EC2 instance type for SD-WAN hosts             |
-| `vyos_s3_bucket`               | `fra-vyos-bucket`     | S3 bucket with VyOS LXD image                  |
-| `vyos_s3_key`                  | `vyos_dxgl-1.3.3-...` | VyOS image filename in S3                      |
-| `vpn_psk`                      | auto-generated        | IPsec pre-shared key (32 chars if not set)     |
+| Variable                       | Default                            | Description                                                  |
+|--------------------------------|------------------------------------|--------------------------------------------------------------|
+| `sdwan_instance_type`          | `c5.large`                         | EC2 instance type for SD-WAN hosts                           |
+| `vpn_psk`                      | auto-generated                     | IPsec pre-shared key (32 chars if not set)                   |
 | `nv_sdwan_bgp_asn`             | `64501`               | BGP ASN for nv-sdwan                           |
 | `fra_sdwan_bgp_asn`            | `64502`               | BGP ASN for fra-sdwan                          |
 | `nv_branch1_bgp_asn`           | `64503`               | BGP ASN for nv-branch1                         |

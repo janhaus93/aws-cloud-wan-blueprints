@@ -24,24 +24,6 @@ variable "sdwan_instance_type" {
   default     = "c5.large"
 }
 
-variable "vyos_s3_bucket" {
-  description = "S3 bucket name containing the VyOS LXD image"
-  type        = string
-  default     = "fra-vyos-bucket"
-}
-
-variable "vyos_s3_region" {
-  description = "AWS region of the VyOS S3 bucket"
-  type        = string
-  default     = "us-east-1"
-}
-
-variable "vyos_s3_key" {
-  description = "S3 object key (filename) for the VyOS LXD image"
-  type        = string
-  default     = "vyos_dxgl-1.3.3-bc64a3a-5_lxd_amd64.tar.gz"
-}
-
 # VPN and BGP Configuration Variables
 
 variable "vpn_psk" {
