@@ -64,6 +64,8 @@ set protocols static route {peer_ip1}/32 next-hop {gw}
 set protocols bgp {asn} neighbor {peer_ip1} remote-as {cloudwan_asn}
 set protocols bgp {asn} neighbor {peer_ip1} ebgp-multihop 4
 set protocols bgp {asn} neighbor {peer_ip1} address-family ipv4-unicast
+set protocols bgp {asn} neighbor {peer_ip1} address-family ipv4-unicast nexthop-self
+set protocols bgp {asn} neighbor {peer_ip1} address-family ipv4-unicast soft-reconfiguration inbound
 """.format(asn=asn, peer_ip1=peer_ip1, cloudwan_asn=cloudwan_asn)
 
     if peer_ip2:
@@ -72,40 +74,13 @@ set protocols bgp {asn} neighbor {peer_ip1} address-family ipv4-unicast
 set protocols bgp {asn} neighbor {peer_ip2} remote-as {cloudwan_asn}
 set protocols bgp {asn} neighbor {peer_ip2} ebgp-multihop 4
 set protocols bgp {asn} neighbor {peer_ip2} address-family ipv4-unicast
+set protocols bgp {asn} neighbor {peer_ip2} address-family ipv4-unicast nexthop-self
+set protocols bgp {asn} neighbor {peer_ip2} address-family ipv4-unicast soft-reconfiguration inbound
 """.format(asn=asn, peer_ip2=peer_ip2, cloudwan_asn=cloudwan_asn)
 
-    # Prefix-lists for Prod/Dev dummy subnets from all branches
-    script += """
-# Prefix-lists for Prod/Dev dummy subnets
-set policy prefix-list PROD-PREFIXES rule 10 action permit
-set policy prefix-list PROD-PREFIXES rule 10 prefix 10.250.1.1/32
-set policy prefix-list PROD-PREFIXES rule 20 action permit
-set policy prefix-list PROD-PREFIXES rule 20 prefix 10.250.2.1/32
-
-set policy prefix-list DEV-PREFIXES rule 10 action permit
-set policy prefix-list DEV-PREFIXES rule 10 prefix 10.250.1.2/32
-set policy prefix-list DEV-PREFIXES rule 20 action permit
-set policy prefix-list DEV-PREFIXES rule 20 prefix 10.250.2.2/32
-
-# Route-map for community tagging on Cloud WAN outbound
-set policy route-map CLOUDWAN-OUT rule 10 action permit
-set policy route-map CLOUDWAN-OUT rule 10 match ip address prefix-list PROD-PREFIXES
-set policy route-map CLOUDWAN-OUT rule 10 set community {asn}:100
-
-set policy route-map CLOUDWAN-OUT rule 20 action permit
-set policy route-map CLOUDWAN-OUT rule 20 match ip address prefix-list DEV-PREFIXES
-set policy route-map CLOUDWAN-OUT rule 20 set community {asn}:200
-
-set policy route-map CLOUDWAN-OUT rule 100 action permit
-
-# Apply route-map as outbound policy on Cloud WAN BGP neighbors
-set protocols bgp {asn} neighbor {peer_ip1} address-family ipv4-unicast route-map export CLOUDWAN-OUT
-""".format(asn=asn, peer_ip1=peer_ip1)
-
-    if peer_ip2:
-        script += "set protocols bgp {asn} neighbor {peer_ip2} address-family ipv4-unicast route-map export CLOUDWAN-OUT\n".format(
-            asn=asn, peer_ip2=peer_ip2
-        )
+    # Community-tagging block removed per design.md §8.2 (Requirements 4.1-4.5).
+    # Branch-learned routes are advertised to Cloud WAN as plain eBGP updates
+    # without any community attribute, prefix filtering, or outbound route-map.
 
     script += """
 commit

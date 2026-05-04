@@ -11,10 +11,21 @@ import os
 from ssm_utils import get_instance_configs, send_and_wait
 
 
-# Configurable via environment variables (with defaults matching the bash script)
-VYOS_S3_BUCKET = os.environ.get("VYOS_S3_BUCKET", "fra-vyos-bucket")
-VYOS_S3_REGION = os.environ.get("VYOS_S3_REGION", "us-east-1")
-VYOS_S3_KEY = os.environ.get("VYOS_S3_KEY", "vyos_dxgl-1.3.3-bc64a3a-5_lxd_amd64.tar.gz")
+# ECR Public source (anonymous HTTPS pull)
+VYOS_ECR_PUBLIC_URI = os.environ.get(
+    "VYOS_ECR_PUBLIC_URI",
+    "public.ecr.aws/x9x1a6t3/vyos",
+)
+VYOS_ECR_IMAGE_TAG = os.environ.get("VYOS_ECR_IMAGE_TAG", "1.3.3")
+
+# Oras CLI pinning — upgrade requires changing BOTH constants together.
+ORAS_VERSION = "1.2.0"
+ORAS_SHA256 = "5b3f1cbb86d869eee68120b9b45b9be983f3738442f87ee5f06b00edd0bab336"
+ORAS_URL = (
+    f"https://github.com/oras-project/oras/releases/download/"
+    f"v{ORAS_VERSION}/oras_{ORAS_VERSION}_linux_amd64.tar.gz"
+)
+
 UBUNTU_PASSWORD = os.environ.get("UBUNTU_PASSWORD", "aws123")
 SSM_PARAM_PREFIX = os.environ.get("SSM_PARAM_PREFIX", "/sdwan/")
 SSM_TIMEOUT = int(os.environ.get("SSM_TIMEOUT", "600"))
@@ -35,6 +46,11 @@ def build_phase1_commands():
     """
     return f"""#!/bin/bash
 set -e
+
+# SSM RunShellScript runs with a minimal environment (no HOME). Several tools
+# (oras, docker, etc.) need HOME to locate their config/credential store at
+# startup, even for anonymous operations. Set it explicitly.
+export HOME=/root
 
 apt-get update -y
 apt-get install -y python3-pip net-tools tmux curl unzip jq
@@ -65,8 +81,21 @@ profiles:
 EOF
 cat /tmp/lxd.yaml | lxd init --preseed || true
 
-# Download VyOS image from S3
-aws --region {VYOS_S3_REGION} s3 cp s3://{VYOS_S3_BUCKET}/{VYOS_S3_KEY} /tmp/vyos.tar.gz
+# Install oras CLI (pinned, SHA-256-verified, idempotent)
+if ! command -v oras >/dev/null 2>&1 || [ "$(oras version 2>/dev/null | awk '/Version:/ {{print $2}}')" != "{ORAS_VERSION}" ]; then
+    cd /tmp
+    curl -fsSL -o oras.tar.gz "{ORAS_URL}"
+    echo "{ORAS_SHA256}  oras.tar.gz" | sha256sum --check
+    tar -xzf oras.tar.gz oras
+    install -m 0755 oras /usr/local/bin/oras
+    rm -f oras.tar.gz oras
+fi
+
+# Pull VyOS LXD image from ECR Public (anonymous)
+rm -f /tmp/vyos.tar.gz
+cd /tmp
+oras pull "{VYOS_ECR_PUBLIC_URI}:{VYOS_ECR_IMAGE_TAG}"
+mv /tmp/vyos_dxgl-1.3.3-bc64a3a-5_lxd_amd64.tar.gz /tmp/vyos.tar.gz
 lxc image import /tmp/vyos.tar.gz --alias vyos 2>/dev/null || true
 
 # Router container config

@@ -17,12 +17,19 @@ Parameters:
   InstanceProfileName:
     Type: String
     Description: IAM instance profile name created by the Virginia stack
+  BranchTestEc2InstanceProfileName:
+    Type: String
+    Description: Branch-test-EC2 IAM instance profile name (created by Virginia stack)
   CloudWanConnectCidrFra:
     Type: String
     Default: 10.100.1.0/24
   UbuntuAmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id
+  FraBranch1TestSubnetCidr:
+    Type: String
+    Default: 10.10.3.0/24
+    Description: CIDR for the fra-branch1 test subnet (must fit within 10.10.0.0/20)
 
 Resources:
   # ===========================================================================
@@ -160,11 +167,116 @@ Resources:
       DestinationCidrBlock: 0.0.0.0/0
       NatGatewayId: !Ref FraBranch1NatGw
 
+  # Overlay routes on FraBranch1PrivateRt — each points to the VyOS internal ENI
+  # (FraBranch1InternalEni) so traffic for remote overlay destinations is
+  # handed to the branch router for IPsec/BGP forwarding. The existing NAT
+  # default route above (0.0.0.0/0 → FraBranch1NatGw) is preserved unchanged.
+  FraBranch1OverlayRouteNvBranch:
+    Type: AWS::EC2::Route
+    DependsOn: FraBranch1InternalAttach
+    Properties:
+      RouteTableId: !Ref FraBranch1PrivateRt
+      DestinationCidrBlock: 10.20.0.0/20              # nv-branch1 VPC
+      NetworkInterfaceId: !Ref FraBranch1InternalEni
+
+  FraBranch1OverlayRouteCloudWan:
+    Type: AWS::EC2::Route
+    DependsOn: FraBranch1InternalAttach
+    Properties:
+      RouteTableId: !Ref FraBranch1PrivateRt
+      DestinationCidrBlock: 10.100.0.0/16             # Cloud WAN Connect Peer CIDRs
+      NetworkInterfaceId: !Ref FraBranch1InternalEni
+
+  FraBranch1OverlayRouteProd:
+    Type: AWS::EC2::Route
+    DependsOn: FraBranch1InternalAttach
+    Properties:
+      RouteTableId: !Ref FraBranch1PrivateRt
+      DestinationCidrBlock: 10.50.0.0/16              # nv-prod-vpc
+      NetworkInterfaceId: !Ref FraBranch1InternalEni
+
   FraBranch1PrivateSubnetRtAssoc:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       SubnetId: !Ref FraBranch1PrivateSubnet
       RouteTableId: !Ref FraBranch1PrivateRt
+
+  # ===========================================================================
+  # Branch Test EC2 - fra-branch1 test subnet, security group, and EC2.
+  # Uses the shared IAM instance profile from Virginia stack (design §5.1
+  # Option A) passed in via BranchTestEc2InstanceProfileName parameter.
+  # ===========================================================================
+  FraBranch1TestSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref FraBranch1Vpc
+      CidrBlock: !Ref FraBranch1TestSubnetCidr
+      AvailabilityZone: eu-central-1a
+      Tags:
+        - Key: Name
+          Value: fra-branch1-vpc-test-1a
+        - Key: Type
+          Value: private
+
+  # Attach to existing FraBranch1PrivateRt so overlay + NAT default routes apply
+  FraBranch1TestSubnetRtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref FraBranch1TestSubnet
+      RouteTableId: !Ref FraBranch1PrivateRt
+
+  FraBranch1TestEc2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Branch test EC2 - ICMP/SSH from RFC1918, HTTPS from VPC
+      VpcId: !Ref FraBranch1Vpc
+      SecurityGroupIngress:
+        - IpProtocol: icmp
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 10.0.0.0/8
+          Description: ICMP from RFC1918 (reachability probes)
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 10.0.0.0/8
+          Description: SSH from RFC1918 (overlay diagnostics)
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.10.0.0/20
+          Description: HTTPS from Branch_VPC CIDR (SSM)
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+          Description: All outbound
+      Tags:
+        - Key: Name
+          Value: fra-branch1-vpc-test-ec2-sg
+
+  FraBranch1TestEc2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref UbuntuAmiId
+      InstanceType: t3.micro
+      IamInstanceProfile: !Ref BranchTestEc2InstanceProfileName
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref FraBranch1TestSubnet
+          GroupSet:
+            - !Ref FraBranch1TestEc2SecurityGroup
+          AssociatePublicIpAddress: false
+      Tags:
+        - Key: Name
+          Value: fra-branch1-vpc-test-ec2
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
 
   # ===========================================================================
   # fra-sdwan-vpc (10.200.0.0/16)
@@ -684,3 +796,11 @@ Outputs:
     Value: !GetAtt FraSdwanOutsideEni.PrimaryPrivateIpAddress
   FraBranch1OutsidePrivateIp:
     Value: !GetAtt FraBranch1OutsideEni.PrimaryPrivateIpAddress
+
+  # Branch test EC2 outputs (fra-branch1)
+  FraBranch1TestEc2InstanceId:
+    Value: !Ref FraBranch1TestEc2Instance
+  FraBranch1TestEc2PrivateIp:
+    Value: !GetAtt FraBranch1TestEc2Instance.PrivateIp
+  FraBranch1TestEc2SsmCommand:
+    Value: !Sub 'aws ssm start-session --target ${FraBranch1TestEc2Instance} --region ${AWS::Region}'
